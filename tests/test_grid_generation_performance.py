@@ -113,6 +113,29 @@ def test_grid_properties():
     assert np.mean(city_counts) >= 5, f"Too few cities: {np.mean(city_counts)}"
 
 
+def test_large_grid_custom_terrain_properties():
+    """Test that larger maps honor custom mountain and city settings."""
+    key = jax.random.PRNGKey(2026)
+    grid = generate_grid(
+        key,
+        grid_dims=(12, 12),
+        pad_to=12,
+        mountain_density_range=(0.30, 0.35),
+        num_cities_range=(24, 28),
+        min_generals_distance=8,
+    )
+
+    assert grid.shape == (12, 12)
+    assert int(jnp.sum(grid == 1)) == 1
+    assert int(jnp.sum(grid == 2)) == 1
+
+    mountain_count = int(jnp.sum(grid == -2))
+    city_count = int(jnp.sum(grid > 2))
+
+    assert 43 <= mountain_count <= 50
+    assert 20 < city_count <= 28
+
+
 def test_jit_performance():
     """Test performance with JIT compilation."""
     print("\n=== Testing JIT Performance ===")

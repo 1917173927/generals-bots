@@ -222,14 +222,42 @@ def main():
     parser.add_argument("--minibatch-size", type=int, default=256, help="Minibatch size for PPO updates.")
     parser.add_argument("--lr", type=float, default=3e-4, help="Adam learning rate.")
     parser.add_argument("--pool-size", type=int, default=10_000, help="Auto-reset state pool size.")
+    parser.add_argument("--grid-size", type=int, default=4, help="Square map size used by the policy network.")
+    parser.add_argument("--truncation", type=int, default=500, help="Maximum game steps before an auto-reset.")
+    parser.add_argument("--mountain-density-min", type=float, default=0.18, help="Minimum mountain density.")
+    parser.add_argument("--mountain-density-max", type=float, default=0.24, help="Maximum mountain density.")
+    parser.add_argument("--num-cities-min", type=int, default=9, help="Minimum number of generated cities.")
+    parser.add_argument("--num-cities-max", type=int, default=11, help="Maximum number of generated cities.")
+    parser.add_argument("--min-generals-distance", type=int, default=None, help="Minimum distance between generals.")
+    parser.add_argument("--max-generals-distance", type=int, default=None, help="Maximum distance between generals.")
+    parser.add_argument("--city-army-min", type=int, default=40, help="Generated city minimum starting army.")
+    parser.add_argument("--city-army-max", type=int, default=51, help="Generated city maximum starting army.")
     parser.add_argument("--model-path", default="jax_ppo_model_env.eqx", help="Path where the trained model is saved.")
     args = parser.parse_args()
 
-    grid_size = 4
+    grid_size = args.grid_size
+    min_generals_distance = args.min_generals_distance
+    if min_generals_distance is None:
+        min_generals_distance = max(3, grid_size // 2)
+
+    if grid_size < 4:
+        parser.error("--grid-size must be at least 4")
+    if args.pool_size < args.num_envs:
+        parser.error("--pool-size must be at least num_envs")
+    if not (0.0 <= args.mountain_density_min <= args.mountain_density_max <= 1.0):
+        parser.error("mountain density must satisfy 0 <= min <= max <= 1")
+    if not (2 <= args.num_cities_min <= args.num_cities_max):
+        parser.error("city count must satisfy 2 <= min <= max")
+    if not (args.city_army_min < args.city_army_max):
+        parser.error("city army range must satisfy min < max")
+
     print("JAX PPO (GeneralsEnv API)")
     print(f"Environments:  {args.num_envs}")
     print(f"Device:        {jax.devices()[0]}")
     print(f"Grid:          {grid_size}x{grid_size} with composite rewards")
+    print(f"Mountains:     {args.mountain_density_min:.2f}-{args.mountain_density_max:.2f}")
+    print(f"Cities:        {args.num_cities_min}-{args.num_cities_max}")
+    print(f"General dist:  min={min_generals_distance}, max={args.max_generals_distance}")
     print(f"Epochs:        {args.num_epochs}")
     print(f"Minibatch:     {args.minibatch_size}")
     print()
@@ -243,7 +271,16 @@ def main():
 
     print(f"Parameters: {sum(x.size for x in jax.tree.leaves(params)):,}")
 
-    env = GeneralsEnv(grid_dims=(grid_size, grid_size), truncation=500, pool_size=args.pool_size)
+    env = GeneralsEnv(
+        grid_dims=(grid_size, grid_size),
+        truncation=args.truncation,
+        pool_size=args.pool_size,
+        mountain_density_range=(args.mountain_density_min, args.mountain_density_max),
+        num_cities_range=(args.num_cities_min, args.num_cities_max),
+        min_generals_distance=min_generals_distance,
+        max_generals_distance=args.max_generals_distance,
+        castle_val_range=(args.city_army_min, args.city_army_max),
+    )
     collect_rollout = make_collect_rollout(env, args.num_steps)
 
     key, pool_key = jrandom.split(key)

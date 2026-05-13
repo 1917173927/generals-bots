@@ -19,6 +19,7 @@ import optax
 
 from generals.core.action import compute_valid_move_mask
 from generals.core import game
+from generals.core.grid import generate_grid
 from generals.core.rewards import composite_reward_fn
 
 from network import PolicyValueNetwork, obs_to_array
@@ -44,8 +45,58 @@ def random_action(key, obs):
     return jnp.array([should_pass, move[0], move[1], move[2], is_half], dtype=jnp.int32)
 
 
-@jax.jit
-def rollout_step(states, network, key):
+def make_simple_general_grid(key, grid_size):
+    """Create an empty square grid with two random generals."""
+    grid = jnp.zeros((grid_size, grid_size), dtype=jnp.int32)
+    idx = jrandom.choice(key, grid_size * grid_size, shape=(2,), replace=False)
+    pos_a = (idx[0] // grid_size, idx[0] % grid_size)
+    pos_b = (idx[1] // grid_size, idx[1] % grid_size)
+    return grid.at[pos_a].set(1).at[pos_b].set(2)
+
+
+def make_state_pool(
+    key,
+    pool_size,
+    grid_size,
+    map_generator,
+    mountain_density_range,
+    num_cities_range,
+    min_generals_distance,
+    max_generals_distance,
+    castle_val_range,
+):
+    """Generate a reusable pool of initial states for auto-reset."""
+    keys = jrandom.split(key, pool_size)
+
+    if map_generator == "simple":
+        grids = jax.vmap(lambda k: make_simple_general_grid(k, grid_size))(keys)
+    else:
+        grids = jax.vmap(
+            lambda k: generate_grid(
+                k,
+                grid_dims=(grid_size, grid_size),
+                pad_to=grid_size,
+                mountain_density_range=mountain_density_range,
+                num_cities_range=num_cities_range,
+                min_generals_distance=min_generals_distance,
+                max_generals_distance=max_generals_distance,
+                castle_val_range=castle_val_range,
+            )
+        )(keys)
+
+    return jax.vmap(game.create_initial_state)(grids)
+
+
+def make_initial_states(pool, num_envs):
+    """Take initial states from the pool and spread future reset indices."""
+    states = jax.tree.map(lambda x: x[:num_envs], pool)
+    pool_size = pool.armies.shape[0]
+    pool_idx = (jnp.arange(num_envs, dtype=jnp.int32) + num_envs) % pool_size
+    return states._replace(pool_idx=pool_idx)
+
+
+@eqx.filter_jit
+def rollout_step(states, pool, network, key, truncation):
     """Vectorized rollout step for all environments."""
     num_envs = states.armies.shape[0]
     
@@ -80,27 +131,23 @@ def rollout_step(states, network, key):
     
     # Terminated/truncated
     terminated = infos.is_done
-    truncated = (new_states.time >= 500) & ~terminated
+    truncated = (new_states.time >= truncation) & ~terminated
     dones = terminated | truncated
-    
-    # Auto-reset if done with random but different general locations
-    def make_random_general_grid(key):
-        grid = jnp.zeros((4, 4), dtype=jnp.int32)
-        # Sample two different random positions out of 16
-        idx = jrandom.choice(key, 16, shape=(2,), replace=False)
-        pos_a = (idx[0] // 4, idx[0] % 4)
-        pos_b = (idx[1] // 4, idx[1] % 4)
-        grid = grid.at[pos_a].set(1).at[pos_b].set(2)
-        return grid
 
-    reset_keys = jrandom.split(key, num_envs)
-    grids = jax.vmap(make_random_general_grid)(reset_keys)
-    reset_states = jax.vmap(game.create_initial_state)(grids)
-    
+    # Auto-reset from a pre-generated pool. This keeps rollout_step fast and
+    # lets the raw trainer use complex generated maps without regenerating them
+    # inside every environment step.
+    pool_size = pool.armies.shape[0]
+    reset_indices = new_states.pool_idx % pool_size
+    reset_states = jax.tree.map(lambda x: x[reset_indices], pool)
+    next_pool_idx = jnp.where(dones, new_states.pool_idx + num_envs, new_states.pool_idx)
+    reset_states = reset_states._replace(pool_idx=next_pool_idx)
+    current_states = new_states._replace(pool_idx=next_pool_idx)
+
     final_states = jax.tree.map(
         lambda reset, current: jnp.where(dones.reshape(num_envs, *([1] * (reset.ndim - 1))), reset, current),
         reset_states,
-        new_states
+        current_states,
     )
     
     return final_states, (obs_arr, masks, actions_p0, logprobs, values, rewards, dones, infos), key
@@ -181,6 +228,33 @@ def main():
     parser.add_argument("--num-steps", type=int, default=128, help="Rollout steps per PPO iteration.")
     parser.add_argument("--num-iterations", type=int, default=50, help="Number of PPO iterations.")
     parser.add_argument("--lr", type=float, default=3e-4, help="Adam learning rate.")
+    parser.add_argument("--grid-size", type=int, default=4, help="Square map size used by the policy network.")
+    parser.add_argument("--truncation", type=int, default=500, help="Maximum game steps before an auto-reset.")
+    parser.add_argument("--pool-size", type=int, default=2048, help="Number of pre-generated reset states.")
+    parser.add_argument(
+        "--map-generator",
+        choices=("simple", "generated"),
+        default="simple",
+        help="Use simple empty maps or generated maps with mountains/cities.",
+    )
+    parser.add_argument("--mountain-density-min", type=float, default=0.18, help="Generated-map minimum mountain density.")
+    parser.add_argument("--mountain-density-max", type=float, default=0.24, help="Generated-map maximum mountain density.")
+    parser.add_argument("--num-cities-min", type=int, default=9, help="Generated-map minimum number of cities.")
+    parser.add_argument("--num-cities-max", type=int, default=11, help="Generated-map maximum number of cities.")
+    parser.add_argument(
+        "--min-generals-distance",
+        type=int,
+        default=None,
+        help="Generated-map minimum Manhattan distance between generals.",
+    )
+    parser.add_argument(
+        "--max-generals-distance",
+        type=int,
+        default=None,
+        help="Generated-map maximum Manhattan distance between generals.",
+    )
+    parser.add_argument("--city-army-min", type=int, default=40, help="Generated city minimum starting army.")
+    parser.add_argument("--city-army-max", type=int, default=51, help="Generated city maximum starting army.")
     parser.add_argument("--model-path", default="jax_ppo_model.eqx", help="Path where the trained model is saved.")
     args = parser.parse_args()
 
@@ -188,32 +262,61 @@ def main():
     num_steps = args.num_steps
     num_iterations = args.num_iterations
     lr = args.lr
+    grid_size = args.grid_size
+    min_generals_distance = args.min_generals_distance
+    if min_generals_distance is None:
+        min_generals_distance = max(3, grid_size // 2)
+
+    if grid_size < 4:
+        parser.error("--grid-size must be at least 4")
+    if args.pool_size < num_envs:
+        parser.error("--pool-size must be at least num_envs")
+    if not (0.0 <= args.mountain_density_min <= args.mountain_density_max <= 1.0):
+        parser.error("mountain density must satisfy 0 <= min <= max <= 1")
+    if not (2 <= args.num_cities_min <= args.num_cities_max):
+        parser.error("city count must satisfy 2 <= min <= max")
+    if not (args.city_army_min < args.city_army_max):
+        parser.error("city army range must satisfy min < max")
     
-    print(f"JAX PPO (Raw Game API - Max Performance)")
+    print("JAX PPO (Raw Game API - Max Performance)")
     print(f"Environments:  {num_envs}")
     print(f"Device:        {jax.devices()[0]}")
-    print(f"Grid:          4x4 with composite rewards")
+    print(f"Grid:          {grid_size}x{grid_size} ({args.map_generator}, truncation={args.truncation})")
+    if args.map_generator == "generated":
+        print(f"Mountains:     {args.mountain_density_min:.2f}-{args.mountain_density_max:.2f}")
+        print(f"Cities:        {args.num_cities_min}-{args.num_cities_max}")
+        print(f"General dist:  min={min_generals_distance}, max={args.max_generals_distance}")
+    print(f"Reset pool:    {args.pool_size}")
     print()
     
     # Initialize
     key = jrandom.PRNGKey(42)
     key, net_key = jrandom.split(key)
-    network = PolicyValueNetwork(net_key, grid_size=4)
+    network = PolicyValueNetwork(net_key, grid_size=grid_size)
     optimizer = optax.adam(lr)
     params = eqx.filter(network, eqx.is_inexact_array)
     opt_state = optimizer.init(params)
 
     print(f"Parameters: {sum(x.size for x in jax.tree.leaves(params)):,}")
     
-    # Initialize states directly (no env wrapper)
-    grid = jnp.zeros((4, 4), dtype=jnp.int32)
-    grid = grid.at[0, 0].set(1).at[3, 3].set(2)
-    grids = jnp.stack([grid] * num_envs)
-    states = jax.vmap(game.create_initial_state)(grids)
+    key, pool_key = jrandom.split(key)
+    pool = make_state_pool(
+        pool_key,
+        args.pool_size,
+        grid_size,
+        args.map_generator,
+        (args.mountain_density_min, args.mountain_density_max),
+        (args.num_cities_min, args.num_cities_max),
+        min_generals_distance,
+        args.max_generals_distance,
+        (args.city_army_min, args.city_army_max),
+    )
+    jax.block_until_ready(pool.armies)
+    states = make_initial_states(pool, num_envs)
     
     print("\nWarming up...")
     for _ in range(3):
-        states, _, key = rollout_step(states, network, key)
+        states, _, key = rollout_step(states, pool, network, key, args.truncation)
     jax.block_until_ready(states)
     
     print("Training...\n")
@@ -224,7 +327,7 @@ def main():
         # Collect rollout
         rollout_data = []
         for _ in range(num_steps):
-            states, data, key = rollout_step(states, network, key)
+            states, data, key = rollout_step(states, pool, network, key, args.truncation)
             rollout_data.append(data)
         jax.block_until_ready(states)
         

@@ -52,8 +52,9 @@ def generate_grid(
     num_cities = jax.random.randint(keys[0], (), num_cities_range[0], num_cities_range[1] + 1)
 
     # Number of mountains: sample uniformly from density range
-    min_mountains = int(mountain_density_range[0] * num_tiles)
-    max_mountains = int(mountain_density_range[1] * num_tiles)
+    max_placeable_mountains = num_tiles - 2
+    min_mountains = min(int(mountain_density_range[0] * num_tiles), max_placeable_mountains)
+    max_mountains = min(int(mountain_density_range[1] * num_tiles), max_placeable_mountains)
     num_mountains = jax.random.randint(keys[1], (), min_mountains, max_mountains + 1)
 
     # =================================================================
@@ -92,13 +93,16 @@ def generate_grid(
     gumbel_noise = jax.random.gumbel(keys[8], shape=logits.shape)
     scores = logits + gumbel_noise
     
-    # Get indices for mountains (use static max and mask extras)
-    max_mountains = num_tiles // 4  # Upper bound for static shape
-    _, mountain_indices = jax.lax.top_k(scores, max_mountains)
+    # Get indices for mountains using the configured static upper bound and
+    # mask dynamic extras. This lets larger maps use denser mountain settings.
+    max_mountain_slots = max(1, max_mountains)
+    _, mountain_indices = jax.lax.top_k(scores, max_mountain_slots)
     
     # Create flat grid, place mountains only up to num_mountains
     flat_grid = grid.reshape(-1)
-    mountain_mask = jnp.arange(max_mountains) < num_mountains
+    available_mountains = jnp.sum(flat_available)
+    mountain_limit = jnp.minimum(num_mountains, available_mountains)
+    mountain_mask = jnp.arange(max_mountain_slots) < mountain_limit
     
     # Place mountains at selected indices
     def place_mountain(flat_grid, idx_and_mask):
@@ -120,9 +124,11 @@ def generate_grid(
 
     # Castle near A: must be empty and within BFS distance 6
     castle_a_candidates = near_a & (grid == 0)
-    # Fallback: if no candidates, clear nearest mountain neighbor
+    # Fallback: if no local candidates are reachable, use any empty cell;
+    # if mountains filled the map, clear one mountain instead of overwriting a general.
     has_candidates_a = jnp.any(castle_a_candidates)
-    fallback_a_mask = near_a & (grid == -2)
+    any_empty_a = grid == 0
+    fallback_a_mask = jnp.where(jnp.any(any_empty_a), any_empty_a, grid == -2)
     castle_a_mask = jnp.where(has_candidates_a, castle_a_candidates, fallback_a_mask)
     pos_castle_a = sample_from_mask(castle_a_mask, keys[6])
     grid = grid.at[pos_castle_a].set(castle_val_a)
@@ -130,7 +136,8 @@ def generate_grid(
     # Castle near B: must be empty and within BFS distance 6 (not on first castle)
     castle_b_candidates = near_b & (grid == 0)
     has_candidates_b = jnp.any(castle_b_candidates)
-    fallback_b_mask = near_b & (grid == -2)
+    any_empty_b = grid == 0
+    fallback_b_mask = jnp.where(jnp.any(any_empty_b), any_empty_b, grid == -2)
     castle_b_mask = jnp.where(has_candidates_b, castle_b_candidates, fallback_b_mask)
     pos_castle_b = sample_from_mask(castle_b_mask, keys[7])
     grid = grid.at[pos_castle_b].set(castle_val_b)
@@ -146,13 +153,16 @@ def generate_grid(
     city_gumbel = jax.random.gumbel(keys[9], shape=city_logits.shape)
     city_scores = city_logits + city_gumbel
     
-    # Cap max_extra_cities at the grid size to avoid top_k errors
-    max_extra_cities = min(20, flat_city_available.shape[0])
+    # Reserve static capacity from the configured range instead of the old
+    # fixed cap, so larger generated maps can actually contain more cities.
+    max_extra_cities = max(1, min(num_cities_range[1] - 2, flat_city_available.shape[0]))
     _, city_indices = jax.lax.top_k(city_scores, max_extra_cities)
     
     # Generate random city values
     city_values = jax.random.randint(keys[10], (max_extra_cities,), castle_val_range[0], castle_val_range[1])
-    city_mask = jnp.arange(max_extra_cities) < remaining_cities
+    available_cities = jnp.sum(flat_city_available)
+    city_limit = jnp.minimum(remaining_cities, available_cities)
+    city_mask = jnp.arange(max_extra_cities) < city_limit
     
     flat_grid = grid.reshape(-1)
     
