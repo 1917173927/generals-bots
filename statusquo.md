@@ -21,3 +21,9 @@
 - **Status:** Completed
 - **Next Steps:** Run longer 8x8+ evaluation jobs before making policy-quality claims; 4x4 should remain only a smoke target.
 - **Context:** Verified compile checks, raw PPO 4x4/simple GPU smoke, raw PPO 8x8/generated GPU smoke, GeneralsEnv PPO 8x8/generated GPU smoke, 8x8 model load/forward, targeted grid tests, full pytest, and `git diff --check`.
+
+## [2026-05-13 19:27] Devlog Modification Inventory
+- **Changes:** Expanded `docs/devlogs/2026-05-13-larger-map-ppo-support.md` with a file-by-file inventory of the larger-map PPO support changes from commit `1dfe86d`.
+- **Status:** Completed
+- **Next Steps:** None for this documentation-only update.
+- **Context:** This update only records prior code changes in the devlog; it does not change runtime behavior.

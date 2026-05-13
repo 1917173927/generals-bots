@@ -133,3 +133,62 @@ Results:
 - The full suite passed with 14 tests.
 
 Known environment note: the CUDA runtime still prints a non-fatal kernel driver version parse warning, but JAX selects the GPU backend and the training smoke tests execute on `cuda:0`.
+
+## Modification Inventory
+
+This section records the exact repository changes introduced by commit `1dfe86d feat: support larger generated PPO maps`.
+
+### `examples/_experimental/ppo/train.py`
+
+- Added `generate_grid` integration so the raw PPO trainer can create generated maps with mountains and cities.
+- Added `make_simple_general_grid`, `make_state_pool`, and `make_initial_states` helpers.
+- Changed rollout auto-reset to draw from a pre-generated `GameState` pool rather than regenerating hardcoded 4x4 maps inside the rollout step.
+- Added CLI arguments for map size, truncation, reset-pool size, map generator mode, mountain density, city count, general spacing, and city army ranges.
+- Constructed `PolicyValueNetwork` with the requested `--grid-size`.
+- Passed the reset pool and truncation setting through warmup and rollout collection.
+- Preserved the previous 4x4 simple-map default for cheap smoke tests.
+
+### `examples/_experimental/ppo/train2.py`
+
+- Added the same larger-map and terrain CLI controls to the `GeneralsEnv` PPO trainer.
+- Constructed `PolicyValueNetwork` with the requested `--grid-size`.
+- Passed grid dimensions, truncation, pool size, mountain density, city count, general spacing, and city army range into `GeneralsEnv`.
+- Printed the selected generated-map settings at startup.
+
+### `examples/_experimental/visualize_policy.py`
+
+- Replaced positional `sys.argv` parsing with `argparse`.
+- Added map-size and generated-terrain CLI arguments matching the trainer.
+- Loaded saved models with the requested `--grid-size`.
+- Added reusable simple/generated map creation helpers for initial render and reset.
+- Removed hardcoded 4x4 map creation and hardcoded 16-cell sampling.
+
+### `generals/core/grid.py`
+
+- Derived mountain placement capacity from the requested density range instead of the old `num_tiles // 4` implementation cap.
+- Capped requested mountain count to available non-general cells.
+- Changed castle fallback placement to prefer empty cells and avoid overwriting generals when local reachable candidates are exhausted.
+- Derived extra-city placement capacity from `num_cities_range` instead of the old fixed cap of 20 extra cities.
+- Capped city placement by available empty cells.
+- Restored a final newline at end of file.
+
+### `tests/test_grid_generation_performance.py`
+
+- Added `test_large_grid_custom_terrain_properties`.
+- The new test generates a 12x12 map with 30%-35% mountain density and 24-28 requested cities.
+- The assertions verify map shape, exactly one general for each player, high mountain count, and city count above the old fixed extra-city cap.
+
+### `examples/_experimental/README.md`
+
+- Added raw PPO command examples for 4x4 smoke training.
+- Added an 8x8 simple-map training example.
+- Added an 8x8 generated-map training example with explicit mountain, city, and general-distance settings.
+- Added a matching visualization command that uses the same grid size and compatible generated-map settings.
+
+### `docs/devlogs/2026-05-13-larger-map-ppo-support.md`
+
+- Added this English devlog describing the problem, implementation, commands, verification results, and file-level change inventory.
+
+### `statusquo.md`
+
+- Appended the in-progress and completed ledger entries for the larger-map PPO support task.
