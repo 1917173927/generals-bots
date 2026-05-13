@@ -1,6 +1,4 @@
-"""
-Neural network architecture for Generals.io PPO agent.
-"""
+"""Neural network architecture for the experimental Generals.io PPO agent."""
 
 import jax
 import jax.numpy as jnp
@@ -10,7 +8,7 @@ import equinox as eqx
 
 class PolicyValueNetwork(eqx.Module):
     """
-    Convolutional policy-value network for 4x4 Generals grid.
+    Convolutional policy-value network for square Generals grids.
     
     Architecture:
     - 4 convolutional layers for feature extraction
@@ -85,17 +83,20 @@ class PolicyValueNetwork(eqx.Module):
         mask_t = jnp.transpose(mask, (2, 0, 1))  # [4, H, W]
         mask_penalty = (1 - mask_t) * -1e9
         # Add pass action (always valid)
-        combined_mask = jnp.concatenate([
-            mask_penalty,  # 4 directions
-            mask_penalty,  # 4 half-move directions
-            jnp.zeros((1, grid_size, grid_size))  # pass action
-        ], axis=0)
+        combined_mask = jnp.concatenate(
+            [
+                mask_penalty,  # 4 directions
+                mask_penalty,  # 4 half-move directions
+                jnp.zeros((1, grid_size, grid_size)),  # pass action
+            ],
+            axis=0,
+        )
         logits = (logits + combined_mask).reshape(-1)
 
         grid_cells = grid_size * grid_size
 
         if action is None:
-            # Sample action
+            # Sample from the flattened action space.
             idx = jrandom.categorical(key, logits)
             direction, position = idx // grid_cells, idx % grid_cells
             row, col = position // grid_size, position % grid_size
@@ -139,4 +140,3 @@ def obs_to_array(obs):
         obs.fog_cells,
         obs.structures_in_fog
     ], axis=0).astype(jnp.float32)
-

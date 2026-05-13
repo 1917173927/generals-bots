@@ -6,6 +6,15 @@ Loads a saved model and renders the game using pygame.
 
 import sys
 import time
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parents[1]
+PPO_DIR = SCRIPT_DIR / "ppo"
+for path in (REPO_ROOT, PPO_DIR):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
 import jax.numpy as jnp
 import jax.random as jrandom
 import equinox as eqx
@@ -18,24 +27,25 @@ from generals.gui import GUI
 from generals.gui.properties import GuiMode
 from generals.core.rendering import JaxGameAdapter
 
-try:
-    from ppo.network import PolicyValueNetwork, obs_to_array
-except ImportError:
-    from examples.ppo.network import PolicyValueNetwork, obs_to_array
+from network import PolicyValueNetwork, obs_to_array
 
 
 def random_action(key, obs):
     """Random valid action."""
     mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
-    valid = jnp.argwhere(mask, size=100, fill_value=-1)
+    valid = jnp.argwhere(mask, size=mask.size, fill_value=-1)
     num_valid = jnp.sum(jnp.all(valid >= 0, axis=-1))
-    
+
     k1, k2 = jrandom.split(key)
+    idx = jrandom.randint(k1, (), 0, jnp.maximum(num_valid, 1))
+    move = jnp.where(
+        num_valid > 0,
+        valid[idx],
+        jnp.array([0, 0, 0], dtype=jnp.int32),
+    )
     should_pass = num_valid == 0
-    idx = jnp.minimum(jrandom.randint(k1, (), 0, jnp.maximum(num_valid, 1)), num_valid - 1)
-    move = valid[idx]
     is_half = jrandom.randint(k2, (), 0, 2)
-    
+
     return jnp.array([should_pass, move[0], move[1], move[2], is_half], dtype=jnp.int32)
 
 
@@ -170,4 +180,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

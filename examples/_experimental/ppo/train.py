@@ -1,12 +1,16 @@
-"""
-Clean JAX PPO using raw game API for maximum performance.
+"""Clean JAX PPO using the raw game API for maximum performance."""
 
-This version bypasses the GeneralsEnv wrapper for 20k+ FPS.
-For a cleaner Gymnasium-like API example, see examples/ppo/train.py
-"""
-
+import argparse
 import sys
 import time
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parents[2]
+for path in (REPO_ROOT, SCRIPT_DIR):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -23,15 +27,20 @@ from network import PolicyValueNetwork, obs_to_array
 def random_action(key, obs):
     """Random valid action."""
     mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
-    valid = jnp.argwhere(mask, size=100, fill_value=-1)
+    valid = jnp.argwhere(mask, size=mask.size, fill_value=-1)
     num_valid = jnp.sum(jnp.all(valid >= 0, axis=-1))
-    
+
     k1, k2 = jrandom.split(key)
+
+    idx = jrandom.randint(k1, (), 0, jnp.maximum(num_valid, 1))
+    move = jnp.where(
+        num_valid > 0,
+        valid[idx],
+        jnp.array([0, 0, 0], dtype=jnp.int32),
+    )
     should_pass = num_valid == 0
-    idx = jnp.minimum(jrandom.randint(k1, (), 0, jnp.maximum(num_valid, 1)), num_valid - 1)
-    move = valid[idx]
     is_half = jrandom.randint(k2, (), 0, 2)
-    
+
     return jnp.array([should_pass, move[0], move[1], move[2], is_half], dtype=jnp.int32)
 
 
@@ -99,19 +108,28 @@ def rollout_step(states, network, key):
 
 @jax.jit
 def compute_gae(rewards, values, dones, gamma=0.99, lam=0.95):
-    """Compute advantages using GAE."""
+    """Compute GAE advantages and value returns."""
     num_steps, num_envs = rewards.shape
-    advantages = jnp.zeros_like(rewards)
-    last_adv = jnp.zeros(num_envs)
-    
-    for t in reversed(range(num_steps)):
-        next_value = jnp.where(t == num_steps - 1, 0.0, values[t + 1])
-        next_nonterminal = jnp.where(t == num_steps - 1, 1.0 - dones[t], 1.0 - dones[t + 1])
-        delta = rewards[t] + gamma * next_value * next_nonterminal - values[t]
-        advantages = advantages.at[t].set(delta + gamma * lam * next_nonterminal * last_adv)
-        last_adv = advantages[t]
-    
-    return advantages
+    values_with_bootstrap = jnp.concatenate([values, jnp.zeros((1, num_envs))], axis=0)
+
+    def gae_step(carry, inputs):
+        last_adv = carry
+        reward, value, next_value, done = inputs
+        nonterminal = 1.0 - done
+        delta = reward + gamma * next_value * nonterminal - value
+        advantage = delta + gamma * lam * nonterminal * last_adv
+        return advantage, advantage
+
+    inputs = (
+        rewards[::-1],
+        values[::-1],
+        values_with_bootstrap[1:][::-1],
+        dones[::-1],
+    )
+    _, advantages_rev = jax.lax.scan(gae_step, jnp.zeros(num_envs), inputs)
+    advantages = advantages_rev[::-1]
+    returns = advantages + values
+    return advantages, returns
 
 
 @jax.jit
@@ -129,6 +147,7 @@ def ppo_loss(network, obs, mask, action, old_logprob, advantage, ret, clip=0.2):
     return policy_loss + value_loss + entropy_loss
 
 
+@eqx.filter_jit
 def train_step(network, opt_state, batch, optimizer):
     """Single training step."""
     obs, masks, actions, old_logprobs, advantages, returns = batch
@@ -147,19 +166,28 @@ def train_step(network, opt_state, batch, optimizer):
             obs_flat, masks_flat, actions_flat, old_logprobs_flat, advantages_flat, returns_flat
         )
         return jnp.mean(losses)
-    
+
     loss, grads = eqx.filter_value_and_grad(loss_fn)(network)
-    updates, opt_state = optimizer.update(grads, opt_state, network)
+    params = eqx.filter(network, eqx.is_inexact_array)
+    updates, opt_state = optimizer.update(grads, opt_state, params)
     network = eqx.apply_updates(network, updates)
-    
+
     return network, opt_state, loss
 
 
 def main():
-    num_envs = int(sys.argv[1]) if len(sys.argv) > 1 else 256
-    num_steps = 256
-    num_iterations = 200
-    lr = 3e-4
+    parser = argparse.ArgumentParser(description="Train the experimental raw-game JAX PPO agent.")
+    parser.add_argument("num_envs", nargs="?", type=int, default=128, help="Number of parallel environments.")
+    parser.add_argument("--num-steps", type=int, default=128, help="Rollout steps per PPO iteration.")
+    parser.add_argument("--num-iterations", type=int, default=50, help="Number of PPO iterations.")
+    parser.add_argument("--lr", type=float, default=3e-4, help="Adam learning rate.")
+    parser.add_argument("--model-path", default="jax_ppo_model.eqx", help="Path where the trained model is saved.")
+    args = parser.parse_args()
+
+    num_envs = args.num_envs
+    num_steps = args.num_steps
+    num_iterations = args.num_iterations
+    lr = args.lr
     
     print(f"JAX PPO (Raw Game API - Max Performance)")
     print(f"Environments:  {num_envs}")
@@ -172,9 +200,9 @@ def main():
     key, net_key = jrandom.split(key)
     network = PolicyValueNetwork(net_key, grid_size=4)
     optimizer = optax.adam(lr)
-    opt_state = optimizer.init(eqx.filter(network, eqx.is_array))
-    
-    params, _ = eqx.partition(network, eqx.is_array)
+    params = eqx.filter(network, eqx.is_inexact_array)
+    opt_state = optimizer.init(params)
+
     print(f"Parameters: {sum(x.size for x in jax.tree.leaves(params)):,}")
     
     # Initialize states directly (no env wrapper)
@@ -212,12 +240,11 @@ def main():
         infos = jax.tree.map(lambda *xs: jnp.stack(xs), *infos_list)
         
         # Compute advantages
-        advantages = compute_gae(rewards, values, dones)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        returns = advantages + values
-        
+        advantages, returns = compute_gae(rewards, values, dones)
+        policy_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
         # Train
-        batch = (obs, masks, actions, logprobs, advantages, returns)
+        batch = (obs, masks, actions, logprobs, policy_advantages, returns)
         network, opt_state, loss = train_step(network, opt_state, batch, optimizer)
         jax.block_until_ready(network)
         
@@ -238,11 +265,9 @@ def main():
     print("\nTraining complete!")
     
     # Save model
-    model_path = "jax_ppo_model.eqx"
+    model_path = args.model_path
     eqx.tree_serialise_leaves(model_path, network)
     print(f"Model saved to: {model_path}")
 
-
 if __name__ == "__main__":
     main()
-

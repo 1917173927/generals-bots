@@ -258,7 +258,7 @@ def global_update(state: GameState) -> GameState:
     time = state.time
     armies = state.armies
 
-    increment_all = time % 50 == 0
+    increment_all = (time > 0) & (time % 50 == 0)
     armies = lax.cond(
         increment_all,
         lambda a: a + state.ownership[0].astype(jnp.int32) + state.ownership[1].astype(jnp.int32),
@@ -266,7 +266,7 @@ def global_update(state: GameState) -> GameState:
         armies,
     )
 
-    increment_structures = (time % 2 == 1)
+    increment_structures = (time > 0) & (time % 2 == 0)
     structure_mask = (state.generals | state.cities).astype(jnp.int32)
     armies = lax.cond(
         increment_structures,
