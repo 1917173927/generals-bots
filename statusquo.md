@@ -27,3 +27,9 @@
 - **Status:** Completed
 - **Next Steps:** None for this documentation-only update.
 - **Context:** This update only records prior code changes in the devlog; it does not change runtime behavior.
+
+## [2026-05-13 19:57] Large-Scale Policy Training
+- **Changes:** Added behavior-cloning and batch-evaluation tools, exposed policy logits for supervised training, recorded large-scale GPU training results, and produced `/tmp/generals-bc-8x8-soft-v3.eqx`.
+- **Status:** Completed
+- **Next Steps:** Use the v3 checkpoint as a warm start for PPO or self-play if stronger-than-Expander performance is required.
+- **Context:** Final 8x8 generated-map sampled policy reached 90.8%, 92.1%, and 93.0% win rate over 2048-game/500-step independent evaluations against Random; it is not stronger than Expander.

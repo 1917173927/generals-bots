@@ -68,3 +68,52 @@ def expander_action(key: jnp.ndarray, observation) -> jnp.ndarray:
         dtype=jnp.int32,
     )
 
+
+@jax.jit
+def expander_greedy_action(observation) -> jnp.ndarray:
+    """
+    Deterministic Expander action for supervised policy warm-starts.
+
+    This uses the same scoring idea as expander_action but chooses the highest
+    scoring move instead of sampling. It gives behavior cloning a stable target.
+    """
+    valid_mask = compute_valid_move_mask_obs(observation)
+    H, W = observation.armies.shape
+
+    valid_positions = jnp.argwhere(valid_mask, size=H * W * 4, fill_value=-1)
+    num_valid = jnp.sum(jnp.all(valid_positions >= 0, axis=-1))
+    should_pass = num_valid == 0
+
+    def evaluate_move(idx):
+        move = valid_positions[idx]
+        is_valid = jnp.all(move >= 0)
+
+        orig_row, orig_col, direction = move[0], move[1], move[2]
+
+        di, dj = DIRECTIONS[direction]
+        dest_row = jnp.clip(orig_row + di, 0, H - 1)
+        dest_col = jnp.clip(orig_col + dj, 0, W - 1)
+
+        orig_armies = observation.armies[orig_row, orig_col]
+        dest_armies = observation.armies[dest_row, dest_col]
+        is_opponent = observation.opponent_cells[dest_row, dest_col]
+        is_neutral = observation.neutral_cells[dest_row, dest_col]
+        is_owned = observation.owned_cells[dest_row, dest_col]
+
+        can_capture = orig_armies > dest_armies + 1
+        is_expansion = ~is_owned & (is_opponent | is_neutral)
+        opponent_multiplier = jnp.where(is_opponent, 2.0, 1.0)
+        expansion_score = orig_armies.astype(jnp.float32) * 10.0 * opponent_multiplier
+        fallback_score = orig_armies.astype(jnp.float32)
+        score = jnp.where(is_expansion & can_capture, expansion_score, fallback_score)
+        return jnp.where(is_valid, score, -jnp.inf)
+
+    scores = jax.vmap(evaluate_move)(jnp.arange(H * W * 4))
+    move_idx = jnp.argmax(scores)
+    selected_move = valid_positions[move_idx]
+    selected_move = jnp.where(should_pass, jnp.array([0, 0, 0], dtype=jnp.int32), selected_move)
+
+    return jnp.array(
+        [should_pass.astype(jnp.int32), selected_move[0], selected_move[1], selected_move[2], jnp.int32(0)],
+        dtype=jnp.int32,
+    )

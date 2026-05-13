@@ -66,5 +66,27 @@ uv run python examples/_experimental/visualize_policy.py /tmp/generals-ppo-8x8-g
   --min-generals-distance 5
 ```
 
+For faster warm-starts, behavior-clone the policy from the randomized Expander
+teacher and then evaluate the checkpoint on independent generated maps:
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/behavior_clone.py 128 \
+  --grid-size 8 \
+  --pool-size 4096 \
+  --num-steps 32 \
+  --num-iterations 2000 \
+  --lr 0.0007 \
+  --model-path /tmp/generals-bc-8x8-soft.eqx
+
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/evaluate_policy.py /tmp/generals-bc-8x8-soft.eqx \
+  --num-games 2048 \
+  --grid-size 8 \
+  --max-steps 500 \
+  --opponent random \
+  --policy-mode sample
+```
+
 ### `visualize_policy.py`
 Visualization tools for trained policies. Work in progress.

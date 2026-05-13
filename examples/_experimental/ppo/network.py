@@ -49,18 +49,16 @@ class PolicyValueNetwork(eqx.Module):
         self.value_linear1 = eqx.nn.Linear(grid_size * grid_size * 4, 64, key=keys[6])
         self.value_linear2 = eqx.nn.Linear(64, 1, key=keys[7])
 
-    def __call__(self, obs, mask, key, action=None):
+    def logits_value(self, obs, mask):
         """
-        Forward pass through the network.
-        
+        Compute masked policy logits and value for one observation.
+
         Args:
             obs: Observation array [9, H, W]
             mask: Valid action mask [H, W, 4]
-            key: Random key for action sampling
-            action: If provided, evaluate this action. Otherwise sample.
-            
+
         Returns:
-            (action, value, log_prob, entropy)
+            (logits, value), where logits is flattened over 9 * H * W actions.
         """
         grid_size = obs.shape[-1]
 
@@ -92,6 +90,24 @@ class PolicyValueNetwork(eqx.Module):
             axis=0,
         )
         logits = (logits + combined_mask).reshape(-1)
+
+        return logits, value
+
+    def __call__(self, obs, mask, key, action=None):
+        """
+        Forward pass through the network.
+
+        Args:
+            obs: Observation array [9, H, W]
+            mask: Valid action mask [H, W, 4]
+            key: Random key for action sampling
+            action: If provided, evaluate this action. Otherwise sample.
+
+        Returns:
+            (action, value, log_prob, entropy)
+        """
+        grid_size = obs.shape[-1]
+        logits, value = self.logits_value(obs, mask)
 
         grid_cells = grid_size * grid_size
 
