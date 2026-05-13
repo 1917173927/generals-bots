@@ -1,7 +1,7 @@
 numpy>=2.0.0
 pygame>=2.6.0
 python-socketio[client]>=5.11.4
-jax>=0.4.30
-jaxlib>=0.4.30
+jax>=0.10.0
+jaxlib>=0.10.0
 equinox>=0.13.8
 optax>=0.2.8

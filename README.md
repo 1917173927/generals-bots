@@ -27,6 +27,19 @@ cd generals-bots
 pip install -e .
 ```
 
+For NVIDIA CUDA 13 training environments, install the CUDA extra so the JAX
+CUDA plugin and PJRT package match the pinned JAX/JAXLIB line:
+
+```bash
+uv sync --extra cuda13
+```
+
+Then verify that JAX sees the GPU:
+
+```bash
+uv run python -c "import jax; print(jax.default_backend(), jax.devices())"
+```
+
 ## 🌱 Getting Started
 
 ### Basic Game Loop
