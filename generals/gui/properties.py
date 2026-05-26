@@ -20,6 +20,7 @@ class Properties:
     __agent_data: dict[str, dict[str, Any]]
     __mode: GuiMode
     __game_speed: float = 1.0
+    human_player: int = 0
     __clock: Clock = Clock()
     __font_size = 18
     __show_tile_types: bool = False
