@@ -75,10 +75,19 @@ def parse_args() -> argparse.Namespace:
         parser.error("city count must satisfy 2 <= min <= max")
     if not (args.city_army_min < args.city_army_max):
         parser.error("city army range must satisfy min < max")
+    if args.min_generals_distance is not None and args.min_generals_distance < 1:
+        parser.error("--min-generals-distance must be >= 1")
+    if args.max_generals_distance is not None and args.max_generals_distance < 1:
+        parser.error("--max-generals-distance must be >= 1")
 
     args.effective_min_generals_distance = args.min_generals_distance
     if args.effective_min_generals_distance is None:
         args.effective_min_generals_distance = max(3, args.grid_size // 2)
+    if (
+        args.max_generals_distance is not None
+        and args.effective_min_generals_distance > args.max_generals_distance
+    ):
+        parser.error("generals distance must satisfy min <= max")
     return args
 
 
