@@ -46,3 +46,25 @@ def test_ppo_policy_agent_rejects_observation_size_mismatch(tmp_path):
         assert "expects 4x4" in str(exc)
     else:
         raise AssertionError("Expected ValueError for mismatched observation shape")
+
+
+def test_ppo_policy_agent_accepts_agent_id_keyword(tmp_path):
+    agent = PPOPolicyAgent(make_checkpoint(tmp_path), grid_size=4, agent_id="Model")
+
+    assert agent.id == "Model"
+
+
+def test_ppo_policy_agent_keeps_legacy_id_keyword(tmp_path):
+    agent = PPOPolicyAgent(make_checkpoint(tmp_path), grid_size=4, id="Legacy")
+
+    assert agent.id == "Legacy"
+
+
+def test_ppo_policy_agent_rejects_conflicting_identifier_keywords(tmp_path):
+    try:
+        PPOPolicyAgent(make_checkpoint(tmp_path), grid_size=4, agent_id="Model", id="Legacy")
+    except TypeError as exc:
+        assert "agent_id" in str(exc)
+        assert "id" in str(exc)
+    else:
+        raise AssertionError("Expected TypeError for conflicting identifier keywords")

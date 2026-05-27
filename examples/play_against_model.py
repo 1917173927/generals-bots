@@ -110,7 +110,7 @@ def main() -> None:
     args = parse_args()
     model_player = 1 - args.human_player
     key = jrandom.PRNGKey(args.seed)
-    policy_agent = PPOPolicyAgent(args.model_path, args.grid_size, args.policy_mode, id="PPO Model")
+    policy_agent = PPOPolicyAgent(args.model_path, args.grid_size, args.policy_mode, agent_id="PPO Model")
     names = make_player_names(args.human_player)
     agent_data = {
         "Human": {"color": (220, 55, 55)},

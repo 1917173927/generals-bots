@@ -179,9 +179,18 @@ class PPOPolicyAgent(Agent):
         model_path: str | Path,
         grid_size: int,
         policy_mode: PolicyMode = "greedy",
-        id: str = "PPO",
+        agent_id: str = "PPO",
+        **kwargs: str,
     ):
-        super().__init__(id)
+        if "id" in kwargs:
+            if agent_id != "PPO":
+                raise TypeError("Pass only one of 'agent_id' or 'id'")
+            agent_id = kwargs.pop("id")
+        if kwargs:
+            unexpected = next(iter(kwargs))
+            raise TypeError(f"Unexpected keyword argument: {unexpected}")
+
+        super().__init__(agent_id)
         if policy_mode not in ("greedy", "sample"):
             raise ValueError("policy_mode must be 'greedy' or 'sample'")
         self.grid_size = grid_size
