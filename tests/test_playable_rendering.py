@@ -17,7 +17,8 @@ def test_valid_target_cells_include_all_passable_cardinal_neighbors():
 
     targets = get_valid_target_cells((2, 2), mountains)
 
-    assert targets == [(1, 2), (3, 2), (2, 1), (2, 3)]
+    assert len(targets) == 4
+    assert set(targets) == {(1, 2), (3, 2), (2, 1), (2, 3)}
 
 
 def test_valid_target_cells_without_selection_is_empty():
