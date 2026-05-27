@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 import pygame
+import pytest
 
 from generals.core import game
 from generals.core.rendering import JaxGameAdapter
@@ -7,13 +8,13 @@ from generals.gui.event_handler import GameEventHandler
 from generals.gui.properties import GuiMode, Properties
 
 
-def make_handler(state):
+def make_handler(state, human_player=0):
     adapter = JaxGameAdapter(state, ["Human", "PPO"], game.get_info(state))
     properties = Properties(
         adapter,
         {"Human": {"color": (220, 55, 55)}, "PPO": {"color": (40, 90, 220)}},
         GuiMode.GAME,
-        human_player=0,
+        human_player=human_player,
     )
     return GameEventHandler(properties)
 
@@ -95,6 +96,11 @@ def test_invalid_source_click_does_not_create_action():
     assert handler.command.selected_cell is None
     assert handler.properties.selected_cell is None
     assert handler.properties.last_game_message == "Invalid source"
+
+
+def test_handler_rejects_human_player_outside_agent_range():
+    with pytest.raises(ValueError, match=r"human_player=2 out of range \[0, 2\)"):
+        make_handler(make_state(), human_player=2)
 
 
 def test_invalid_target_keeps_source_selected_and_sets_message():

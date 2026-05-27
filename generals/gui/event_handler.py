@@ -176,6 +176,12 @@ class ReplayEventHandler(EventHandler):
 class GameEventHandler(EventHandler):
     def __init__(self, properties: Properties):
         super().__init__(properties)
+        if not isinstance(properties.human_player, int) or not (
+            0 <= properties.human_player < len(properties.game.agents)
+        ):
+            raise ValueError(
+                f"human_player={properties.human_player} out of range [0, {len(properties.game.agents)})"
+            )
         self._command = GameCommand()
         self._selected_cell = properties.selected_cell
         self._split_next = properties.split_enabled
