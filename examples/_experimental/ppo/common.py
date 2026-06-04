@@ -7,6 +7,13 @@ import jax.numpy as jnp
 import jax.random as jrandom
 
 from generals.agents._heuristic_logic import HEURISTIC_NAMES, heuristic_action
+from generals.agents.ppo_policy_agent import (
+    greedy_policy_action,
+    index_to_action,
+    normalize_action,
+    obs_to_array,
+    sampled_policy_action,
+)
 from generals.core import game
 from generals.core.action import compute_valid_move_mask
 from generals.core.grid import generate_grid
@@ -98,42 +105,6 @@ def action_to_target_probs(action, grid_size):
     return jax.nn.one_hot(index, 9 * grid_cells, dtype=jnp.float32)
 
 
-def normalize_action(action):
-    """Keep pass actions at a canonical in-bounds source cell."""
-    is_pass = action[0] > 0
-    pass_action = jnp.array([1, 0, 0, 0, 0], dtype=jnp.int32)
-    return jnp.where(is_pass, pass_action, action)
-
-
-def index_to_action(index, grid_size):
-    """Decode a flattened policy index to an action array."""
-    grid_cells = grid_size * grid_size
-    direction = index // grid_cells
-    position = index % grid_cells
-    row = position // grid_size
-    col = position % grid_size
-    is_pass = direction == 8
-    is_half = (direction >= 4) & (direction < 8)
-    actual_dir = jnp.where(is_pass, 0, jnp.where(is_half, direction - 4, direction))
-    return jnp.array([is_pass, row, col, actual_dir, is_half], dtype=jnp.int32)
-
-
-def greedy_policy_action(network, obs):
-    """Select the maximum-logit valid action from a policy network."""
-    obs_arr = obs_to_array(obs)
-    mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
-    logits, _ = network.logits_value(obs_arr, mask)
-    return index_to_action(jnp.argmax(logits), obs.armies.shape[-1])
-
-
-def sampled_policy_action(network, obs, key):
-    """Sample a valid action from a policy network."""
-    obs_arr = obs_to_array(obs)
-    mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
-    action, _, _, _ = network(obs_arr, mask, key, None)
-    return normalize_action(action)
-
-
 def opponent_action(opponent_id, key, obs, random_action_fn):
     """Dispatch a random or heuristic opponent action."""
     return jax.lax.cond(
@@ -187,25 +158,3 @@ def expander_target_probs(obs):
     target = target.at[: 4 * grid_cells].set(flat_move_probs)
     target = target.at[8 * grid_cells].set(jnp.where(num_valid == 0, 1.0, 0.0))
     return target
-
-
-def obs_to_array(obs):
-    """
-    Convert Observation namedtuple to network input array.
-
-    Kept here for standalone scripts that do not want to import network.py.
-    """
-    return jnp.stack(
-        [
-            obs.armies,
-            obs.generals,
-            obs.cities,
-            obs.mountains,
-            obs.neutral_cells,
-            obs.owned_cells,
-            obs.opponent_cells,
-            obs.fog_cells,
-            obs.structures_in_fog,
-        ],
-        axis=0,
-    ).astype(jnp.float32)

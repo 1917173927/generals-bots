@@ -106,6 +106,27 @@ pygame 可视化：
 uv run python examples/visualization_example.py
 ```
 
+玩家对战训练好的 PPO checkpoint：
+
+```bash
+uv run python examples/play_against_model.py /tmp/generals-ppo-8x8-generated.eqx \
+  --grid-size 8 \
+  --map-generator generated \
+  --policy-mode greedy \
+  --human-player 0 \
+  --fps 30
+```
+
+控制方式：
+
+- 左键点击自己的可移动格子，再点击相邻目标格移动。
+- `S` 切换下一步是否移动一半军队，`P` 跳过本回合。
+- 右键或 `Esc` 取消选中，终局后按 `R` 重开，`Q` 退出。
+- 选中的源格会显示黄色边框，可移动目标格会显示绿色边框。
+- 右侧面板会显示当前选择、split 状态和最近一次点击结果。
+
+加载 checkpoint 时，`--grid-size` 必须与保存该 `.eqx` 模型时使用的网络尺寸一致。`.eqx` 属于实验产物，建议放在 `/tmp` 或其他实验目录，不要提交进 Git。
+
 4x4 PPO smoke test：
 
 ```bash

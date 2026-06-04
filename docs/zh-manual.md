@@ -462,6 +462,31 @@ uv run python examples/_experimental/visualize_policy.py /tmp/generals-ppo-8x8-g
 
 可视化时应保持 `--grid-size` 和地图生成参数与训练 checkpoint 兼容，否则网络尺寸或输入分布可能不匹配。
 
+### 7.8 玩家对战训练好的策略
+
+可以用本地 pygame 窗口和 `.eqx` PPO checkpoint 对战：
+
+```bash
+uv run python examples/play_against_model.py /tmp/generals-ppo-8x8-generated.eqx \
+  --grid-size 8 \
+  --map-generator generated \
+  --policy-mode greedy \
+  --human-player 0 \
+  --fps 30
+```
+
+控制方式：
+
+- 左键点击自己的可移动格子作为源格，再点击相邻目标格提交移动。
+- `S` 切换下一步是否 split/半兵移动。
+- `P` 跳过本回合。
+- 右键或 `Esc` 取消当前选中。
+- 终局或达到 `--max-steps` 后按 `R` 重开，`Q` 或关闭窗口退出。
+- 选中的源格会显示黄色边框，可移动目标格会显示绿色边框。
+- 右侧面板会显示当前选择、split 状态和最近一次点击结果。
+
+该入口只支持当前 PPO `PolicyValueNetwork` 保存出的 Equinox `.eqx` checkpoint。`--grid-size` 必须和训练/保存模型时的网络尺寸一致，否则会加载失败或在推理时因输入尺寸不匹配报错。checkpoint 通常较大且属于实验产物，建议放在 `/tmp` 或专门的实验目录，不要提交进 Git。
+
 ## 8. 编写自己的 Agent
 
 自定义 agent 需要继承 `generals.agents.agent.Agent` 并实现 `act(observation, key)`：

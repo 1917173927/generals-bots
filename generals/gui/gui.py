@@ -21,6 +21,7 @@ class GUI:
         mode: GuiMode = GuiMode.TRAIN,
         speed_multiplier: float = 1.0,
         show_tile_types: bool = False,
+        human_player: int = 0,
     ):
         pygame.init()
         pygame.display.set_caption("Generals")
@@ -28,7 +29,7 @@ class GUI:
         # Handle key repeats
         pygame.key.set_repeat(500, 64)
 
-        self.properties = Properties(game, agent_data, mode, speed_multiplier)
+        self.properties = Properties(game, agent_data, mode, speed_multiplier, human_player=human_player)
         self.properties.show_tile_types = show_tile_types
         self.__renderer = Renderer(self.properties)
         self.__event_handler = EventHandler.from_mode(self.properties.mode, self.properties)
