@@ -2,9 +2,11 @@
 
 Usage:
     uv run --with pillow python examples/generate_parallel_training_gif.py
+    uv run --with pillow --with imageio --with imageio-ffmpeg python \
+        examples/generate_parallel_training_gif.py --video-output generals/assets/videos/parallel_training_process.mp4
 
 The project runtime does not depend on Pillow; it is only needed to produce this
-presentation asset.
+presentation asset. Defaults render a 60 second loop at 0.8x playback speed.
 """
 
 from __future__ import annotations
@@ -26,16 +28,21 @@ from generals.agents import ExpanderAgent, RandomAgent
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "generals" / "assets" / "gifs" / "parallel_training_process.gif"
+DEFAULT_VIDEO_OUTPUT = ROOT / "generals" / "assets" / "videos" / "parallel_training_process.mp4"
 FONT_DIR = ROOT / "generals" / "assets" / "fonts"
 
 
 CANVAS_SIZE = (1120, 790)
 NUM_ENVS = 12
 GRID_DIMS = (8, 8)
-FRAMES = 58
+TOTAL_DURATION_MS = 60_000
+PLAYBACK_SPEED = 0.8
+BASE_FRAME_DURATION_MS = 90
+FRAME_DURATION_MS = BASE_FRAME_DURATION_MS / PLAYBACK_SPEED
+FRAMES = round(TOTAL_DURATION_MS / FRAME_DURATION_MS)
+GIF_DURATION_QUANTUM_MS = 10
 STEPS_PER_FRAME = 3
-FRAME_DURATION_MS = 90
-POLICY_UPDATE_EVERY = 24
+POLICY_UPDATE_EVERY = 180
 
 BG = (27, 25, 22)
 PANEL = (244, 239, 227)
@@ -78,9 +85,25 @@ class Metrics:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Animated GIF destination.")
+    parser.add_argument(
+        "--video-output",
+        type=Path,
+        default=None,
+        help=f"Optional MP4 video destination, e.g. {DEFAULT_VIDEO_OUTPUT}.",
+    )
     parser.add_argument("--preview", type=Path, default=None, help="Optional PNG preview of the last frame.")
     parser.add_argument("--seed", type=int, default=17, help="JAX PRNG seed.")
     return parser.parse_args()
+
+
+def frame_durations() -> list[int]:
+    """Return integer per-frame durations that sum exactly to the target length."""
+    base_duration = (TOTAL_DURATION_MS // FRAMES // GIF_DURATION_QUANTUM_MS) * GIF_DURATION_QUANTUM_MS
+    extra_units = (TOTAL_DURATION_MS - base_duration * FRAMES) // GIF_DURATION_QUANTUM_MS
+    return [
+        base_duration + (GIF_DURATION_QUANTUM_MS if frame_idx < extra_units else 0)
+        for frame_idx in range(FRAMES)
+    ]
 
 
 def load_font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -153,7 +176,7 @@ def draw_header(draw: ImageDraw.ImageDraw, metrics: Metrics, policy_strength: fl
     draw_text(
         draw,
         (36, 66),
-        "12 simultaneous rollouts   |   batched self-play signals   |   optimizer pulse",
+        "12 simultaneous rollouts   |   0.8x playback   |   60s training loop   |   optimizer pulse",
         label_font,
         (222, 211, 190),
     )
@@ -462,15 +485,37 @@ def build_animation(seed: int) -> list[Image.Image]:
     return frames
 
 
+def save_video(frames: list[Image.Image], output: Path) -> None:
+    """Write an MP4 version with the same visual timeline as the GIF."""
+    import imageio.v2 as imageio
+
+    fps = len(frames) / (TOTAL_DURATION_MS / 1000)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with imageio.get_writer(
+        output,
+        format="FFMPEG",
+        fps=fps,
+        codec="libx264",
+        quality=8,
+        pixelformat="yuv420p",
+        macro_block_size=2,
+    ) as writer:
+        for frame in frames:
+            writer.append_data(np.asarray(frame))
+
+
 def main() -> None:
     args = parse_args()
     frames = build_animation(args.seed)
+    durations = frame_durations()
+    if sum(durations) != TOTAL_DURATION_MS:
+        raise RuntimeError(f"Frame durations sum to {sum(durations)}ms, expected {TOTAL_DURATION_MS}ms")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
         args.output,
         save_all=True,
         append_images=frames[1:],
-        duration=FRAME_DURATION_MS,
+        duration=durations,
         loop=0,
         disposal=2,
         optimize=True,
@@ -478,8 +523,14 @@ def main() -> None:
     if args.preview:
         args.preview.parent.mkdir(parents=True, exist_ok=True)
         frames[-1].save(args.preview)
+    if args.video_output:
+        save_video(frames, args.video_output)
+        print(f"Wrote {args.video_output}")
     print(f"Wrote {args.output}")
-    print(f"Frames: {len(frames)}, size: {CANVAS_SIZE[0]}x{CANVAS_SIZE[1]}, duration: {FRAME_DURATION_MS}ms")
+    print(
+        f"Frames: {len(frames)}, size: {CANVAS_SIZE[0]}x{CANVAS_SIZE[1]}, "
+        f"speed: {PLAYBACK_SPEED}x, total duration: {sum(durations)}ms"
+    )
 
 
 if __name__ == "__main__":
