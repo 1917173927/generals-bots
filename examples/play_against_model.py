@@ -48,19 +48,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("model_path", help="Path to a saved Equinox .eqx PPO checkpoint.")
     parser.add_argument("--grid-size", type=int, default=8, help="Square map size used by the saved model.")
     parser.add_argument("--map-generator", choices=("simple", "generated"), default="generated")
-    parser.add_argument("--policy-mode", choices=("greedy", "sample"), default="greedy")
+    parser.add_argument("--policy-mode", choices=("greedy", "sample"), default="sample")
     parser.add_argument("--human-player", type=int, choices=(0, 1), default=0)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
         "--auto-tick",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Advance turns automatically when no human action is queued.",
     )
     parser.add_argument(
         "--tick-rate",
         type=float,
         default=2.0,
-        help="Automatic game turns per second when --auto-tick is set.",
+        help="Automatic game turns per second when auto tick is enabled.",
     )
     parser.add_argument("--max-steps", type=int, default=500)
     parser.add_argument("--seed", type=int, default=43)

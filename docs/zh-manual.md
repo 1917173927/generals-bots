@@ -545,7 +545,9 @@ uv run python examples/_experimental/visualize_policy.py /tmp/generals-ppo-8x8-g
 uv run python examples/play_against_model.py /tmp/generals-ppo-8x8-generated.eqx \
   --grid-size 8 \
   --map-generator generated \
-  --policy-mode greedy \
+  --policy-mode sample \
+  --auto-tick \
+  --tick-rate 2 \
   --human-player 0 \
   --fps 30 \
   --preview-top-k 3
@@ -560,6 +562,7 @@ uv run python examples/play_against_model.py /tmp/generals-ppo-8x8-generated.eqx
 - 终局或达到 `--max-steps` 后按 `R` 重开，`Q` 或关闭窗口退出。
 - 选中的源格会显示黄色边框，可移动目标格会显示绿色边框。
 - 右侧面板会显示当前选择、split 状态和最近一次点击结果。
+- 自动 tick 默认开启，没有人类动作时会自动 pass 并推进回合；`--no-auto-tick` 可关闭，`--tick-rate` 控制每秒自动推进次数。
 - 默认会展示 PPO 模型的下一步 Top-K 候选动作：棋盘上标出候选源格/目标格/箭头，右侧面板列出概率和 value。
 - `--preview-top-k` 可设置展示 1-5 个候选，`--no-ai-preview` 可关闭预览。
 - `--policy-mode sample` 时预览显示的是动作概率分布，实际动作仍按概率抽样；`greedy` 模式通常执行概率最高的候选。

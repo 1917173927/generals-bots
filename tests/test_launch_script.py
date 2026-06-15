@@ -12,6 +12,6 @@ def test_v5_launch_script_is_executable_and_points_to_checkpoint():
     assert "uv run --python 3.12 python examples/play_against_model.py" in text
     assert "--grid-size 8" in text
     assert "--map-generator generated" in text
-    assert "--policy-mode greedy" in text
+    assert "--policy-mode sample" in text
     assert "--auto-tick" in text
     assert "--tick-rate 2" in text

@@ -21,7 +21,7 @@ fi
 exec uv run --python 3.12 python examples/play_against_model.py "$model_path" \
   --grid-size 8 \
   --map-generator generated \
-  --policy-mode greedy \
+  --policy-mode sample \
   --human-player 0 \
   --fps 30 \
   --auto-tick \

@@ -55,6 +55,8 @@ def test_parse_args_defaults_to_ai_preview(monkeypatch):
 
     assert args.preview_top_k == 3
     assert args.ai_preview is True
+    assert args.policy_mode == "sample"
+    assert args.auto_tick is True
 
 
 def test_parse_args_rejects_preview_top_k_below_range(monkeypatch):
@@ -68,9 +70,9 @@ def test_parse_args_rejects_preview_top_k_above_range(monkeypatch):
 
 
 def test_parse_args_accepts_auto_tick_options(monkeypatch):
-    args = parse_with_args(monkeypatch, "--auto-tick", "--tick-rate", "2.5")
+    args = parse_with_args(monkeypatch, "--no-auto-tick", "--tick-rate", "2.5")
 
-    assert args.auto_tick is True
+    assert args.auto_tick is False
     assert args.tick_rate == 2.5
 
 
