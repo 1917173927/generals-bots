@@ -109,6 +109,18 @@ uv run python examples/visualization_example.py
 玩家对战训练好的 PPO checkpoint：
 
 ```bash
+./play-v5.command
+```
+
+`play-v5.command` 会使用 `uv run --python 3.12` 启动当前仓库根目录的
+`generals-ppo-8x8-expander-gpu-v5.eqx`，默认玩家为 player 0，PPO 为
+player 1，8x8 generated 地图，greedy 策略，并展示 Top-3 候选动作。
+macOS 下也可以在 Finder 中双击该脚本启动。若 checkpoint 不在仓库根目录，
+可设置 `MODEL_PATH=/path/to/model.eqx ./play-v5.command`。
+
+手动指定 checkpoint 和参数：
+
+```bash
 uv run python examples/play_against_model.py /tmp/generals-ppo-8x8-generated.eqx \
   --grid-size 8 \
   --map-generator generated \
