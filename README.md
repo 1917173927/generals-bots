@@ -232,6 +232,29 @@ uv run python examples/_experimental/ppo/outcome_clone.py 256 \
 
 `outcome_clone.py` 会完整 rollout 对局，并只用最终胜者视角的动作做监督样本；`--winner-source learner` 只保留 learner 赢局，`--negative-weight` 可额外压低败者动作概率。
 
+rollout-search 强辅助评估：
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/search_policy.py /tmp/generals-ppo-8x8-expander-gpu-v5.eqx \
+  --num-games 512 \
+  --grid-size 8 \
+  --map-generator generated \
+  --max-steps 500 \
+  --mountain-density-min 0.12 \
+  --mountain-density-max 0.22 \
+  --num-cities-min 4 \
+  --num-cities-max 8 \
+  --min-generals-distance 5 \
+  --opponent-policy-mode sample \
+  --search-player 0 \
+  --top-k 4 \
+  --rollout-steps 16 \
+  --rollouts-per-action 4
+```
+
+该脚本不训练新 checkpoint；它把 checkpoint 作为 policy prior，并对 top-k 候选动作做短 rollout 评分，可作为强评估策略或后续蒸馏 teacher。
+
 行为克隆 warm start：
 
 ```bash

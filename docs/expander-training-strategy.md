@@ -295,6 +295,57 @@ learner-only winner cloning, 200 iterations:
 
 结论：胜者轨迹克隆提供了可复用的长时序辅助训练能力，但单独使用仍没有让 v5-vs-v5 从约 50% 拉到 80%。下一步更可能需要 league/self-play population、显式 opponent modeling、搜索 teacher，或扩大网络容量，而不是继续微调同一个小网络的最后几层。
 
+## 阶段六：rollout-search 强辅助策略
+
+`examples/_experimental/ppo/search_policy.py` 将 checkpoint 当作 policy prior，对当前局面的 top-k 候选动作做短 rollout 评分，再选择期望更高的动作。它不产生新的 `.eqx` checkpoint，但可以作为强评估策略和后续蒸馏 teacher。
+
+推荐的强辅助配置：
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/search_policy.py /tmp/generals-ppo-8x8-expander-gpu-v5.eqx \
+  --num-games 512 \
+  --grid-size 8 \
+  --map-generator generated \
+  --max-steps 500 \
+  --mountain-density-min 0.12 \
+  --mountain-density-max 0.22 \
+  --num-cities-min 4 \
+  --num-cities-max 8 \
+  --min-generals-distance 5 \
+  --opponent-policy-mode sample \
+  --search-player 0 \
+  --top-k 4 \
+  --rollout-steps 16 \
+  --rollouts-per-action 4 \
+  --seed 19192
+```
+
+当前验证结果：
+
+```text
+rollout-search as player 0 vs v5 sample, seed 19192:
+  wins/losses/draws = 454/46/12
+  win rate = 88.67%
+  decisive win rate = 90.80%
+
+rollout-search as player 1 vs v5 sample, seed 19193:
+  wins/losses/draws = 449/47/16
+  win rate = 87.70%
+  decisive win rate = 90.52%
+```
+
+蒸馏尝试：
+
+```text
+/tmp/generals-ppo-8x8-rollout-search-distill-v1.eqx as player 0 vs v5 sample:
+  wins/losses/draws = 912/918/218
+  win rate = 44.53%
+  decisive win rate = 49.84%
+```
+
+结论：rollout-search 已经让“v5 + 强辅助推理”稳定超过当前 v5 checkpoint 的 80% 总胜率，但目前还没有成功把该行为压缩回现有 42k 参数 checkpoint。继续训练纯 checkpoint 时，应把 search policy 作为 teacher，同时考虑更大网络、更多输入通道、DAgger 数据混合或训练时保留 search distillation 的 KL/temperature 控制。
+
 ## 评估命令
 
 评估 player 0：
