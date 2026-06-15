@@ -197,8 +197,40 @@ uv run python examples/_experimental/ppo/train.py 512 \
   --init-model-path /tmp/generals-ppo-current.eqx \
   --opponent-policy-path /tmp/generals-ppo-best-frozen.eqx \
   --opponent-policy-mode sample \
+  --learner-player 0 \
+  --terminal-reward-scale 1.0 \
   --model-path /tmp/generals-ppo-selfplay-next.eqx
 ```
+
+`--learner-player` 可以把 learner 放在 player 0 或 player 1；`--terminal-reward-scale` 会在 decisive terminal transition 上额外加入零和胜负奖励。
+
+胜者轨迹辅助克隆：
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/outcome_clone.py 256 \
+  --num-steps 500 \
+  --num-iterations 100 \
+  --num-epochs 1 \
+  --minibatch-size 8192 \
+  --lr 0.00001 \
+  --grid-size 8 \
+  --map-generator generated \
+  --mountain-density-min 0.12 \
+  --mountain-density-max 0.22 \
+  --num-cities-min 4 \
+  --num-cities-max 8 \
+  --min-generals-distance 5 \
+  --init-model-path /tmp/generals-ppo-current.eqx \
+  --opponent-policy-path /tmp/generals-ppo-best-frozen.eqx \
+  --policy-mode sample \
+  --opponent-policy-mode sample \
+  --winner-source both \
+  --negative-weight 0.0 \
+  --model-path /tmp/generals-ppo-outcome-clone.eqx
+```
+
+`outcome_clone.py` 会完整 rollout 对局，并只用最终胜者视角的动作做监督样本；`--winner-source learner` 只保留 learner 赢局，`--negative-weight` 可额外压低败者动作概率。
 
 行为克隆 warm start：
 

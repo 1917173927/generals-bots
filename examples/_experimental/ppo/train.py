@@ -115,39 +115,78 @@ def load_or_create_network(key, grid_size, init_model_path=None):
     return eqx.tree_deserialise_leaves(path, network)
 
 
+def stack_learner_actions(learner_actions, opponent_actions, learner_player):
+    """Place learner/opponent actions into the environment's player slots."""
+    return jax.lax.cond(
+        learner_player == 0,
+        lambda _: jnp.stack([learner_actions, opponent_actions], axis=1),
+        lambda _: jnp.stack([opponent_actions, learner_actions], axis=1),
+        None,
+    )
+
+
+def select_learner_obs(obs_p0, obs_p1, learner_player):
+    """Select observations from the learner player's perspective."""
+    return jax.lax.cond(learner_player == 0, lambda _: obs_p0, lambda _: obs_p1, None)
+
+
+def select_opponent_obs(obs_p0, obs_p1, learner_player):
+    """Select observations from the opponent player's perspective."""
+    return jax.lax.cond(learner_player == 0, lambda _: obs_p1, lambda _: obs_p0, None)
+
+
+def apply_terminal_reward(rewards, infos, learner_player, terminal_reward_scale):
+    """Add an optional zero-sum win/loss reward on decisive terminal transitions."""
+    opponent_player = 1 - learner_player
+    terminal_bonus = jnp.where(
+        infos.winner == learner_player,
+        terminal_reward_scale,
+        jnp.where(infos.winner == opponent_player, -terminal_reward_scale, 0.0),
+    )
+    terminal_bonus = jnp.where(infos.is_done & (infos.winner >= 0), terminal_bonus, 0.0)
+    return rewards + terminal_bonus
+
+
 @eqx.filter_jit
-def rollout_step(states, pool, network, key, truncation, opponent_id):
+def rollout_step(states, pool, network, key, truncation, opponent_id, learner_player, terminal_reward_scale):
     """Vectorized rollout step for all environments."""
     num_envs = states.armies.shape[0]
     
     # Observations (BEFORE step for reward calculation)
     obs_p0_prior = jax.vmap(lambda s: game.get_observation(s, 0))(states)
     obs_p1_prior = jax.vmap(lambda s: game.get_observation(s, 1))(states)
+    learner_obs_prior = select_learner_obs(obs_p0_prior, obs_p1_prior, learner_player)
+    opponent_obs_prior = select_opponent_obs(obs_p0_prior, obs_p1_prior, learner_player)
     
     # Actions from network
-    obs_arr = jax.vmap(obs_to_array)(obs_p0_prior)
-    masks = jax.vmap(lambda o: compute_valid_move_mask(o.armies, o.owned_cells, o.mountains))(obs_p0_prior)
+    obs_arr = jax.vmap(obs_to_array)(learner_obs_prior)
+    masks = jax.vmap(lambda o: compute_valid_move_mask(o.armies, o.owned_cells, o.mountains))(learner_obs_prior)
     
     key, *keys = jrandom.split(key, num_envs + 1)
-    actions_p0, values, logprobs, entropies = jax.vmap(network, in_axes=(0, 0, 0, None))(
+    learner_actions, values, logprobs, entropies = jax.vmap(network, in_axes=(0, 0, 0, None))(
         obs_arr, masks, jnp.stack(keys), None
     )
     
-    # Opponent actions for p1
+    # Opponent actions for the non-learner player.
     key, *keys = jrandom.split(key, num_envs + 1)
-    actions_p1 = jax.vmap(lambda k, o: opponent_action(opponent_id, k, o, random_action))(jnp.stack(keys), obs_p1_prior)
+    opponent_actions = jax.vmap(lambda k, o: opponent_action(opponent_id, k, o, random_action))(
+        jnp.stack(keys), opponent_obs_prior
+    )
     
     # Step game
-    actions = jnp.stack([actions_p0, actions_p1], axis=1)
+    actions = stack_learner_actions(learner_actions, opponent_actions, learner_player)
     new_states, infos = jax.vmap(game.step)(states, actions)
     
     # Get new observations (AFTER step)
     obs_p0_new = jax.vmap(lambda s: game.get_observation(s, 0))(new_states)
+    obs_p1_new = jax.vmap(lambda s: game.get_observation(s, 1))(new_states)
+    learner_obs_new = select_learner_obs(obs_p0_new, obs_p1_new, learner_player)
     
     # Compute rewards using composite reward function
     rewards = jax.vmap(composite_reward_fn)(
-        obs_p0_prior, actions_p0, obs_p0_new
+        learner_obs_prior, learner_actions, learner_obs_new
     )
+    rewards = apply_terminal_reward(rewards, infos, learner_player, terminal_reward_scale)
     
     # Terminated/truncated
     terminated = infos.is_done
@@ -170,35 +209,50 @@ def rollout_step(states, pool, network, key, truncation, opponent_id):
         current_states,
     )
     
-    return final_states, (obs_arr, masks, actions_p0, logprobs, values, rewards, dones, infos), key
+    return final_states, (obs_arr, masks, learner_actions, logprobs, values, rewards, dones, infos), key
 
 
 @eqx.filter_jit
-def rollout_step_policy_opponent(states, pool, network, opponent_network, key, truncation, opponent_policy_mode):
+def rollout_step_policy_opponent(
+    states,
+    pool,
+    network,
+    opponent_network,
+    key,
+    truncation,
+    opponent_policy_mode,
+    learner_player,
+    terminal_reward_scale,
+):
     """Vectorized rollout step against a frozen policy checkpoint opponent."""
     num_envs = states.armies.shape[0]
 
     obs_p0_prior = jax.vmap(lambda s: game.get_observation(s, 0))(states)
     obs_p1_prior = jax.vmap(lambda s: game.get_observation(s, 1))(states)
+    learner_obs_prior = select_learner_obs(obs_p0_prior, obs_p1_prior, learner_player)
+    opponent_obs_prior = select_opponent_obs(obs_p0_prior, obs_p1_prior, learner_player)
 
-    obs_arr = jax.vmap(obs_to_array)(obs_p0_prior)
-    masks = jax.vmap(lambda o: compute_valid_move_mask(o.armies, o.owned_cells, o.mountains))(obs_p0_prior)
+    obs_arr = jax.vmap(obs_to_array)(learner_obs_prior)
+    masks = jax.vmap(lambda o: compute_valid_move_mask(o.armies, o.owned_cells, o.mountains))(learner_obs_prior)
 
     key, *keys = jrandom.split(key, num_envs + 1)
-    actions_p0, values, logprobs, entropies = jax.vmap(network, in_axes=(0, 0, 0, None))(
+    learner_actions, values, logprobs, entropies = jax.vmap(network, in_axes=(0, 0, 0, None))(
         obs_arr, masks, jnp.stack(keys), None
     )
 
     key, *keys = jrandom.split(key, num_envs + 1)
-    actions_p1 = jax.vmap(lambda k, o: policy_network_action(opponent_network, k, o, opponent_policy_mode))(
-        jnp.stack(keys), obs_p1_prior
+    opponent_actions = jax.vmap(lambda k, o: policy_network_action(opponent_network, k, o, opponent_policy_mode))(
+        jnp.stack(keys), opponent_obs_prior
     )
 
-    actions = jnp.stack([actions_p0, actions_p1], axis=1)
+    actions = stack_learner_actions(learner_actions, opponent_actions, learner_player)
     new_states, infos = jax.vmap(game.step)(states, actions)
 
     obs_p0_new = jax.vmap(lambda s: game.get_observation(s, 0))(new_states)
-    rewards = jax.vmap(composite_reward_fn)(obs_p0_prior, actions_p0, obs_p0_new)
+    obs_p1_new = jax.vmap(lambda s: game.get_observation(s, 1))(new_states)
+    learner_obs_new = select_learner_obs(obs_p0_new, obs_p1_new, learner_player)
+    rewards = jax.vmap(composite_reward_fn)(learner_obs_prior, learner_actions, learner_obs_new)
+    rewards = apply_terminal_reward(rewards, infos, learner_player, terminal_reward_scale)
 
     terminated = infos.is_done
     truncated = (new_states.time >= truncation) & ~terminated
@@ -217,7 +271,7 @@ def rollout_step_policy_opponent(states, pool, network, opponent_network, key, t
         current_states,
     )
 
-    return final_states, (obs_arr, masks, actions_p0, logprobs, values, rewards, dones, infos), key
+    return final_states, (obs_arr, masks, learner_actions, logprobs, values, rewards, dones, infos), key
 
 
 @jax.jit
@@ -365,6 +419,19 @@ def main():
     parser.add_argument("--truncation", type=int, default=500, help="Maximum game steps before an auto-reset.")
     parser.add_argument("--opponent", choices=OPPONENT_NAMES, default="random", help="Player-1 training opponent.")
     parser.add_argument(
+        "--learner-player",
+        type=int,
+        choices=(0, 1),
+        default=0,
+        help="Environment player slot controlled by the learner.",
+    )
+    parser.add_argument(
+        "--terminal-reward-scale",
+        type=float,
+        default=0.0,
+        help="Optional win/loss reward added on decisive terminal transitions.",
+    )
+    parser.add_argument(
         "--opponent-policy-path",
         default=None,
         help="Optional frozen PPO checkpoint to use as the player-1 opponent instead of --opponent.",
@@ -428,10 +495,13 @@ def main():
         parser.error("--num-epochs must be positive")
     if args.minibatch_size is not None and args.minibatch_size <= 0:
         parser.error("--minibatch-size must be positive when provided")
+    if args.terminal_reward_scale < 0.0:
+        parser.error("--terminal-reward-scale must be non-negative")
     
     print("JAX PPO (Raw Game API - Max Performance)")
     print(f"Environments:  {num_envs}")
     print(f"Device:        {jax.devices()[0]}")
+    print(f"Learner:       player {args.learner_player}")
     if args.opponent_policy_path is None:
         print(f"Opponent:      {args.opponent}")
     else:
@@ -444,6 +514,8 @@ def main():
         print(f"General dist:  min={min_generals_distance}, max={args.max_generals_distance}")
     print(f"Reset pool:    {args.pool_size}")
     print(f"PPO updates:   epochs={args.num_epochs}, minibatch={args.minibatch_size or num_envs * num_steps}")
+    if args.terminal_reward_scale > 0.0:
+        print(f"Terminal rw:   +/-{args.terminal_reward_scale:g}")
     if args.init_model_path is not None:
         print(f"Warm start:    {args.init_model_path}")
     print()
@@ -485,7 +557,16 @@ def main():
     print("\nWarming up...")
     for _ in range(3):
         if opponent_network is None:
-            states, _, key = rollout_step(states, pool, network, key, args.truncation, opponent_id)
+            states, _, key = rollout_step(
+                states,
+                pool,
+                network,
+                key,
+                args.truncation,
+                opponent_id,
+                args.learner_player,
+                args.terminal_reward_scale,
+            )
         else:
             states, _, key = rollout_step_policy_opponent(
                 states,
@@ -495,6 +576,8 @@ def main():
                 key,
                 args.truncation,
                 opponent_policy_mode,
+                args.learner_player,
+                args.terminal_reward_scale,
             )
     jax.block_until_ready(states)
     
@@ -507,7 +590,16 @@ def main():
         rollout_data = []
         for _ in range(num_steps):
             if opponent_network is None:
-                states, data, key = rollout_step(states, pool, network, key, args.truncation, opponent_id)
+                states, data, key = rollout_step(
+                    states,
+                    pool,
+                    network,
+                    key,
+                    args.truncation,
+                    opponent_id,
+                    args.learner_player,
+                    args.terminal_reward_scale,
+                )
             else:
                 states, data, key = rollout_step_policy_opponent(
                     states,
@@ -517,6 +609,8 @@ def main():
                     key,
                     args.truncation,
                     opponent_policy_mode,
+                    args.learner_player,
+                    args.terminal_reward_scale,
                 )
             rollout_data.append(data)
         jax.block_until_ready(states)
@@ -555,8 +649,7 @@ def main():
         if iteration % 10 == 0:
             avg_reward = rewards.mean()
             num_episodes = int(dones.sum())
-            wins = int(jnp.sum((dones) & (infos.winner == 0)))
-            losses = int(jnp.sum((dones) & (infos.winner == 1)))
+            wins = int(jnp.sum((dones) & (infos.winner == args.learner_player)))
             win_rate = wins / max(num_episodes, 1) * 100
             sps = (num_envs * num_steps) / elapsed
             print(f"Iter {iteration:4d} | Loss: {float(loss):.4f} | "

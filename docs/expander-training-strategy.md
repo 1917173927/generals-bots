@@ -167,7 +167,7 @@ uv run python examples/_experimental/ppo/train.py 512 \
 
 ## 阶段四：冻结 checkpoint 自博弈
 
-当前训练入口支持 frozen self-play：learner 从 `--init-model-path` 加载并继续更新，player 1 由 `--opponent-policy-path` 指定的冻结 checkpoint 控制。
+当前训练入口支持 frozen self-play：learner 从 `--init-model-path` 加载并继续更新，非 learner 玩家由 `--opponent-policy-path` 指定的冻结 checkpoint 控制。
 
 ```bash
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
@@ -189,16 +189,111 @@ uv run python examples/_experimental/ppo/train.py 512 \
   --init-model-path /tmp/generals-ppo-current.eqx \
   --opponent-policy-path /tmp/generals-ppo-best-frozen.eqx \
   --opponent-policy-mode sample \
+  --learner-player 0 \
+  --terminal-reward-scale 1.0 \
   --model-path /tmp/generals-ppo-selfplay-next.eqx \
   --seed 9201
 ```
 
+新增参数：
+
+- `--learner-player 0|1`：选择 learner 控制环境中的哪个玩家槽位。用它可以分别训练先手/后手视角，避免只优化 player 0。
+- `--terminal-reward-scale N`：在 decisive terminal transition 上给 learner 胜局 `+N`、败局 `-N`。默认 `0.0`，保持旧 composite reward 行为。
+
 使用建议：
 
-- 不要一开始做 current-vs-current 同步更新；当前 PPO rollout 和 reward 仍按 learner/player 0 组织。
+- 不要一开始做 current-vs-current 同步更新；先固定一个 frozen opponent，确认 learner 视角、终局奖励和评估基线都稳定。
 - 每次 self-play 后都要重新测 Expander、其它 heuristic、历史 best checkpoint 和镜像座位。
 - 如果新模型打赢历史模型但对 Expander 或 mixed heuristic 退化，不应替换 best checkpoint。
 - 后续可以把多个历史 checkpoint 做成 league opponent，但第一步应先保持单个 frozen opponent，确认训练稳定。
+
+### 当前 v5 自博弈结果
+
+以 `/tmp/generals-ppo-8x8-expander-gpu-v5.eqx` 为 current checkpoint，sample-vs-sample 自身基线在 2048 局独立评估中接近 50% decisive：
+
+```text
+v5 as player 0 vs v5 sample:
+  wins/losses/draws = 948/893/207
+  win rate = 46.29%
+  decisive win rate = 51.49%
+
+v5 as player 1 vs v5 sample:
+  wins/losses/draws = 911/919/218
+  win rate = 44.48%
+  decisive win rate = 49.78%
+```
+
+第一轮 frozen self-play（v5 warm start, opponent=v5 sample, learner=player 0, 700 iterations, `lr=5e-6`）只得到小幅提升：
+
+```text
+/tmp/generals-ppo-8x8-selfplay-v1.eqx as player 0 vs v5 sample:
+  wins/losses/draws = 1003/828/217
+  win rate = 48.97%
+  decisive win rate = 54.78%
+
+as player 1 vs v5 sample:
+  wins/losses/draws = 913/913/222
+  win rate = 44.58%
+  decisive win rate = 50.00%
+```
+
+提高终局奖励、增大学习率、长 rollout 或切换 v5 greedy 对手，均未出现接近 80% 的趋势。当前结论：在现有 42k 参数网络和 PPO objective 下，直接 frozen self-play 更适合做小幅 fine-tune，不足以快速学出压倒性 best response。
+
+## 阶段五：胜者轨迹辅助克隆
+
+`examples/_experimental/ppo/outcome_clone.py` 是一个 outcome-conditioned auxiliary trainer。它完整 rollout policy-vs-policy 对局，然后把最终胜者视角的动作作为监督样本训练同一个 `PolicyValueNetwork`。
+
+基础命令：
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/outcome_clone.py 256 \
+  --num-steps 500 \
+  --num-iterations 100 \
+  --num-epochs 1 \
+  --minibatch-size 8192 \
+  --lr 0.00001 \
+  --grid-size 8 \
+  --map-generator generated \
+  --mountain-density-min 0.12 \
+  --mountain-density-max 0.22 \
+  --num-cities-min 4 \
+  --num-cities-max 8 \
+  --min-generals-distance 5 \
+  --init-model-path /tmp/generals-ppo-current.eqx \
+  --opponent-policy-path /tmp/generals-ppo-best-frozen.eqx \
+  --policy-mode sample \
+  --opponent-policy-mode sample \
+  --learner-player 0 \
+  --winner-source both \
+  --negative-weight 0.0 \
+  --model-path /tmp/generals-ppo-outcome-clone.eqx \
+  --seed 9701
+```
+
+关键参数：
+
+- `--winner-source both`：胜者来自任一玩家；这最像从 self-play winner trajectories 蒸馏。
+- `--winner-source learner`：只克隆 learner 赢局；选择压力更强，但当前实验中容易退化。
+- `--negative-weight`：可选对比项，降低最终败者实际动作的概率。当前实验中 `0.2` 会快速压低与 v5 的相似度，但没有提升胜率，需谨慎使用。
+
+当前实证结果：
+
+```text
+both winner cloning, 80 iterations:
+  /tmp/generals-ppo-8x8-outcome-v4-p0.eqx as player 0 vs v5 sample
+  wins/losses/draws = 1001/839/208
+  win rate = 48.88%
+  decisive win rate = 54.40%
+
+learner-only winner cloning, 200 iterations:
+  /tmp/generals-ppo-8x8-outcome-v5-learner-p0.eqx as player 0 vs v5 sample
+  wins/losses/draws = 863/934/251
+  win rate = 42.14%
+  decisive win rate = 48.02%
+```
+
+结论：胜者轨迹克隆提供了可复用的长时序辅助训练能力，但单独使用仍没有让 v5-vs-v5 从约 50% 拉到 80%。下一步更可能需要 league/self-play population、显式 opponent modeling、搜索 teacher，或扩大网络容量，而不是继续微调同一个小网络的最后几层。
 
 ## 评估命令
 
