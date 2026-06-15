@@ -6,9 +6,9 @@ from generals.agents.ppo_policy_agent import PPOPolicyAgent, PolicyValueNetwork,
 from generals.core import game
 
 
-def make_checkpoint(tmp_path, grid_size=4):
+def make_checkpoint(tmp_path, grid_size=4, input_channels=9):
     model_path = tmp_path / "policy.eqx"
-    network = PolicyValueNetwork(jrandom.PRNGKey(0), grid_size=grid_size)
+    network = PolicyValueNetwork(jrandom.PRNGKey(0), grid_size=grid_size, input_channels=input_channels)
     eqx.tree_serialise_leaves(model_path, network)
     return model_path
 
@@ -29,6 +29,14 @@ def make_observation():
     return game.get_observation(state, 0)
 
 
+def make_state():
+    grid = jnp.zeros((4, 4), dtype=jnp.int32)
+    grid = grid.at[0, 0].set(1)
+    grid = grid.at[3, 3].set(2)
+    state = game.create_initial_state(grid)
+    return state._replace(armies=state.armies.at[0, 0].set(5))
+
+
 def test_ppo_policy_agent_loads_checkpoint_and_returns_action(tmp_path):
     agent = PPOPolicyAgent(make_checkpoint(tmp_path), grid_size=4, policy_mode="greedy")
 
@@ -38,6 +46,24 @@ def test_ppo_policy_agent_loads_checkpoint_and_returns_action(tmp_path):
     assert action.dtype == jnp.int32
     assert int(action[0]) in (0, 1)
     assert int(action[4]) in (0, 1)
+
+
+def test_ppo_policy_agent_loads_augmented_full_state_checkpoint_and_returns_action(tmp_path):
+    agent = PPOPolicyAgent(
+        make_checkpoint(tmp_path, input_channels=18),
+        grid_size=4,
+        policy_mode="sample",
+        policy_input="augmented-full-state",
+    )
+
+    action = agent.act_for_state(make_state(), player=0, key=jrandom.PRNGKey(1))
+    preview = agent.explain_for_state(make_state(), player=0, top_k=3)
+
+    assert action.shape == (5,)
+    assert action.dtype == jnp.int32
+    assert int(action[0]) in (0, 1)
+    assert 0 < len(preview.candidates) <= 3
+    assert preview.policy_mode == "sample"
 
 
 def test_ppo_policy_agent_rejects_observation_size_mismatch(tmp_path):

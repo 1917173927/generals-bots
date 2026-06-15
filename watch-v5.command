@@ -7,6 +7,26 @@ cd "$script_dir"
 model_0_path="${MODEL_0_PATH:-${MODEL_PATH:-generals-ppo-8x8-expander-gpu-v5.eqx}}"
 model_1_path="${MODEL_1_PATH:-${OPPONENT_MODEL_PATH:-$model_0_path}}"
 
+infer_policy_input() {
+  local model_path="$1"
+  local model_name
+  model_name="$(basename -- "$model_path")"
+  case "$model_name" in
+    *augmented*)
+      printf '%s\n' "augmented-full-state"
+      ;;
+    *full-state*)
+      printf '%s\n' "full-state"
+      ;;
+    *)
+      printf '%s\n' "observation"
+      ;;
+  esac
+}
+
+model_0_policy_input="${MODEL_0_POLICY_INPUT:-${POLICY_INPUT:-$(infer_policy_input "$model_0_path")}}"
+model_1_policy_input="${MODEL_1_POLICY_INPUT:-${OPPONENT_POLICY_INPUT:-$(infer_policy_input "$model_1_path")}}"
+
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv is required to start the Generals PPO watch match." >&2
   echo "Install uv or make sure it is available in PATH, then run this script again." >&2
@@ -29,6 +49,8 @@ exec uv run --python 3.12 python examples/play_against_model.py \
   --machine-vs-machine \
   --model-0-path "$model_0_path" \
   --model-1-path "$model_1_path" \
+  --model-0-policy-input "$model_0_policy_input" \
+  --model-1-policy-input "$model_1_policy_input" \
   --grid-size 8 \
   --map-generator generated \
   --policy-mode sample \

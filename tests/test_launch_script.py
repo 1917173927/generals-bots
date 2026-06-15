@@ -10,6 +10,9 @@ def test_v5_launch_script_is_executable_and_points_to_checkpoint():
     text = script.read_text()
     assert "generals-ppo-8x8-expander-gpu-v5.eqx" in text
     assert "uv run --python 3.12 python examples/play_against_model.py" in text
+    assert "POLICY_INPUT" in text
+    assert "--policy-input" in text
+    assert "augmented-full-state" in text
     assert "--grid-size 8" in text
     assert "--map-generator generated" in text
     assert "--policy-mode sample" in text
@@ -29,6 +32,11 @@ def test_v5_watch_script_is_executable_and_starts_machine_match():
     assert "--machine-vs-machine" in text
     assert "--model-0-path" in text
     assert "--model-1-path" in text
+    assert "MODEL_0_POLICY_INPUT" in text
+    assert "MODEL_1_POLICY_INPUT" in text
+    assert "--model-0-policy-input" in text
+    assert "--model-1-policy-input" in text
+    assert "augmented-full-state" in text
     assert "--policy-mode sample" in text
     assert "--opponent-policy-mode sample" in text
     assert "--auto-tick" in text

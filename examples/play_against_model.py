@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 
 from generals.agents import PPOPolicyAgent
+from generals.agents.ppo_policy_agent import POLICY_INPUT_NAMES, PolicyPreview, policy_input_default_channels
 from generals.core import game
 from generals.core.action import compute_valid_move_mask, create_action
 from generals.core.game import create_initial_state
@@ -49,6 +50,17 @@ def make_grid(args: argparse.Namespace, key: jnp.ndarray) -> jnp.ndarray:
     )
 
 
+def resolve_alias(parser: argparse.ArgumentParser, primary_name: str, primary, alias_name: str, alias, default):
+    """Resolve two CLI aliases while rejecting conflicting explicit values."""
+    if primary is not None and alias is not None and primary != alias:
+        parser.error(f"pass either {primary_name} or {alias_name}, not both")
+    if primary is not None:
+        return primary
+    if alias is not None:
+        return alias
+    return default
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Play a local Generals game against a trained PPO checkpoint.")
     parser.add_argument("model_path", nargs="?", help="Primary saved Equinox .eqx PPO checkpoint.")
@@ -57,6 +69,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grid-size", type=int, default=8, help="Square map size used by the saved model.")
     parser.add_argument("--map-generator", choices=("simple", "generated"), default="generated")
     parser.add_argument("--policy-mode", choices=("greedy", "sample"), default="sample")
+    parser.add_argument(
+        "--policy-input",
+        choices=POLICY_INPUT_NAMES,
+        default=None,
+        help="Input encoding for the primary PPO checkpoint.",
+    )
+    parser.add_argument(
+        "--model-0-policy-input",
+        choices=POLICY_INPUT_NAMES,
+        default=None,
+        help="Input encoding for player 0 in machine-vs-machine mode.",
+    )
+    parser.add_argument(
+        "--model-1-policy-input",
+        choices=POLICY_INPUT_NAMES,
+        default=None,
+        help="Input encoding for player 1 in machine-vs-machine mode.",
+    )
+    parser.add_argument("--input-channels", type=int, default=None, help="Input channels for the primary PPO checkpoint.")
+    parser.add_argument("--model-0-input-channels", type=int, default=None, help="Input channels for player 0.")
+    parser.add_argument("--model-1-input-channels", type=int, default=None, help="Input channels for player 1.")
     parser.add_argument("--machine-vs-machine", action="store_true", help="Watch two PPO agents play each other.")
     parser.add_argument(
         "--opponent-model-path",
@@ -64,6 +97,13 @@ def parse_args() -> argparse.Namespace:
         help="Second PPO checkpoint for machine-vs-machine mode.",
     )
     parser.add_argument("--opponent-policy-mode", choices=("greedy", "sample"), default=None)
+    parser.add_argument(
+        "--opponent-policy-input",
+        choices=POLICY_INPUT_NAMES,
+        default=None,
+        help="Input encoding for the second PPO checkpoint.",
+    )
+    parser.add_argument("--opponent-input-channels", type=int, default=None, help="Input channels for the second PPO checkpoint.")
     parser.add_argument("--human-player", type=int, choices=(0, 1), default=0)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
@@ -126,6 +166,61 @@ def parse_args() -> argparse.Namespace:
 
     args.model_path = args.model_0_path or args.model_path
     args.opponent_model_path = args.model_1_path or args.opponent_model_path
+    if args.input_channels is not None and args.input_channels <= 0:
+        parser.error("--input-channels must be positive")
+    if args.opponent_input_channels is not None and args.opponent_input_channels <= 0:
+        parser.error("--opponent-input-channels must be positive")
+    if args.model_0_input_channels is not None and args.model_0_input_channels <= 0:
+        parser.error("--model-0-input-channels must be positive")
+    if args.model_1_input_channels is not None and args.model_1_input_channels <= 0:
+        parser.error("--model-1-input-channels must be positive")
+
+    args.model_0_policy_input = resolve_alias(
+        parser,
+        "--model-0-policy-input",
+        args.model_0_policy_input,
+        "--policy-input",
+        args.policy_input,
+        "observation",
+    )
+    explicit_model_1_policy_input = resolve_alias(
+        parser,
+        "--model-1-policy-input",
+        args.model_1_policy_input,
+        "--opponent-policy-input",
+        args.opponent_policy_input,
+        None,
+    )
+    args.model_1_policy_input = explicit_model_1_policy_input
+    if args.model_1_policy_input is None:
+        args.model_1_policy_input = "observation" if args.opponent_model_path is not None else args.model_0_policy_input
+
+    args.model_0_input_channels = resolve_alias(
+        parser,
+        "--model-0-input-channels",
+        args.model_0_input_channels,
+        "--input-channels",
+        args.input_channels,
+        None,
+    )
+    if args.model_0_input_channels is None:
+        args.model_0_input_channels = policy_input_default_channels(args.model_0_policy_input)
+
+    explicit_model_1_input_channels = resolve_alias(
+        parser,
+        "--model-1-input-channels",
+        args.model_1_input_channels,
+        "--opponent-input-channels",
+        args.opponent_input_channels,
+        None,
+    )
+    args.model_1_input_channels = explicit_model_1_input_channels
+    if args.model_1_input_channels is None:
+        args.model_1_input_channels = (
+            args.model_0_input_channels
+            if args.opponent_model_path is None and explicit_model_1_policy_input is None
+            else policy_input_default_channels(args.model_1_policy_input)
+        )
 
     args.effective_min_generals_distance = args.min_generals_distance
     if args.effective_min_generals_distance is None:
@@ -191,15 +286,29 @@ def choose_human_action(command_action: jnp.ndarray | None, auto_tick_ready: boo
     return None
 
 
+def choose_agent_action(agent: PlayAgent, state: game.GameState, player: int, key: jnp.ndarray) -> jnp.ndarray:
+    """Choose an action from a state-aware agent, with legacy observation-agent fallback."""
+    if hasattr(agent, "act_for_state"):
+        return agent.act_for_state(state, player, key)
+    return agent.act(game.get_observation(state, player), key)
+
+
 def choose_machine_actions(state: game.GameState, agents: tuple[PlayAgent, PlayAgent], key: jnp.ndarray) -> jnp.ndarray:
     """Choose simultaneous actions for both machine players."""
     key_0, key_1 = jrandom.split(key)
     return jnp.stack(
         [
-            agents[0].act(game.get_observation(state, 0), key_0),
-            agents[1].act(game.get_observation(state, 1), key_1),
+            choose_agent_action(agents[0], state, 0, key_0),
+            choose_agent_action(agents[1], state, 1, key_1),
         ]
     )
+
+
+def explain_agent(agent: PPOPolicyAgent, state: game.GameState, player: int, top_k: int) -> PolicyPreview:
+    """Return a policy preview from a state-aware agent, with observation fallback."""
+    if hasattr(agent, "explain_for_state"):
+        return agent.explain_for_state(state, player, top_k=top_k)
+    return agent.explain(game.get_observation(state, player), top_k=top_k)
 
 
 def print_game_result(info: game.GameInfo, names: list[str], step_count: int, reached_limit: bool = False) -> None:
@@ -219,14 +328,35 @@ def main() -> None:
         opponent_model_path = args.opponent_model_path or args.model_path
         opponent_policy_mode = args.opponent_policy_mode or args.policy_mode
         machine_agents = (
-            PPOPolicyAgent(args.model_path, args.grid_size, args.policy_mode, agent_id=names[0]),
-            PPOPolicyAgent(opponent_model_path, args.grid_size, opponent_policy_mode, agent_id=names[1]),
+            PPOPolicyAgent(
+                args.model_path,
+                args.grid_size,
+                args.policy_mode,
+                agent_id=names[0],
+                policy_input=args.model_0_policy_input,
+                input_channels=args.model_0_input_channels,
+            ),
+            PPOPolicyAgent(
+                opponent_model_path,
+                args.grid_size,
+                opponent_policy_mode,
+                agent_id=names[1],
+                policy_input=args.model_1_policy_input,
+                input_channels=args.model_1_input_channels,
+            ),
         )
         policy_agent = machine_agents[0]
         preview_player = 0
     else:
         machine_agents = None
-        policy_agent = PPOPolicyAgent(args.model_path, args.grid_size, args.policy_mode, agent_id="PPO Model")
+        policy_agent = PPOPolicyAgent(
+            args.model_path,
+            args.grid_size,
+            args.policy_mode,
+            agent_id="PPO Model",
+            policy_input=args.model_0_policy_input,
+            input_channels=args.model_0_input_channels,
+        )
         preview_player = model_player
 
     agent_data = (
@@ -283,8 +413,7 @@ def main() -> None:
             reached_limit = step_count >= args.max_steps and int(info.winner) < 0
             game_done = bool(info.is_done) or reached_limit
             if args.ai_preview and not game_done:
-                model_obs = game.get_observation(state, preview_player)
-                gui.set_policy_preview(policy_agent.explain(model_obs, top_k=args.preview_top_k))
+                gui.set_policy_preview(explain_agent(policy_agent, state, preview_player, top_k=args.preview_top_k))
             else:
                 gui.clear_policy_preview()
 
@@ -336,8 +465,7 @@ def main() -> None:
                 continue
 
             key, action_key = jrandom.split(key)
-            model_obs = game.get_observation(state, model_player)
-            model_action = policy_agent.act(model_obs, action_key)
+            model_action = choose_agent_action(policy_agent, state, model_player, action_key)
 
             actions = (
                 jnp.stack((human_action, model_action))

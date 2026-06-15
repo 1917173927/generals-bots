@@ -12,14 +12,18 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as np
 
+from generals.core import game
 from generals.core.action import compute_valid_move_mask
 from generals.core.observation import Observation
 
 from .agent import Agent
 
 PolicyMode = Literal["greedy", "sample"]
+PolicyInput = Literal["observation", "full-state", "augmented-full-state"]
 PolicyChannels = tuple[int, int, int, int]
 DEFAULT_POLICY_CHANNELS: PolicyChannels = (32, 32, 32, 16)
+POLICY_INPUT_NAMES: tuple[PolicyInput, ...] = ("observation", "full-state", "augmented-full-state")
+POLICY_INPUT_NAME_TO_ID = {name: idx for idx, name in enumerate(POLICY_INPUT_NAMES)}
 
 _DIRECTION_TARGETS = {
     0: (-1, 0, "Up"),
@@ -160,6 +164,56 @@ def obs_to_array(obs: Observation) -> jnp.ndarray:
     ).astype(jnp.float32)
 
 
+def policy_input_default_channels(policy_input: PolicyInput | str) -> int:
+    """Return the network input channel count produced by one policy input mode."""
+    if policy_input not in POLICY_INPUT_NAMES:
+        raise ValueError(f"policy_input must be one of {POLICY_INPUT_NAMES}")
+    return 18 if policy_input == "augmented-full-state" else 9
+
+
+def full_state_to_array(state: game.GameState, player: int) -> jnp.ndarray:
+    """Encode privileged full-state features using the policy network's 9-channel layout."""
+    opponent = 1 - player
+    return jnp.stack(
+        [
+            state.armies,
+            state.generals,
+            state.cities,
+            state.mountains,
+            state.ownership_neutral,
+            state.ownership[player],
+            state.ownership[opponent],
+            jnp.zeros_like(state.armies, dtype=bool),
+            state.mountains | state.cities,
+        ],
+        axis=0,
+    ).astype(jnp.float32)
+
+
+def augmented_full_state_to_array(state: game.GameState, obs: Observation, player: int) -> jnp.ndarray:
+    """Append privileged full-state channels after the standard fogged observation channels."""
+    return jnp.concatenate([obs_to_array(obs), full_state_to_array(state, player)], axis=0)
+
+
+def policy_input_array_and_mask(
+    state: game.GameState,
+    player: int,
+    policy_input: PolicyInput,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return the network input tensor and valid-action mask for a policy input mode."""
+    obs = game.get_observation(state, player)
+    if policy_input == "observation":
+        mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
+        return obs_to_array(obs), mask
+
+    if policy_input == "full-state":
+        mask = compute_valid_move_mask(state.armies, state.ownership[player], state.mountains)
+        return full_state_to_array(state, player), mask
+
+    mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
+    return augmented_full_state_to_array(state, obs, player), mask
+
+
 def normalize_action(action: jnp.ndarray) -> jnp.ndarray:
     """Keep pass actions at a canonical in-bounds source cell."""
     pass_action = jnp.array([1, 0, 0, 0, 0], dtype=jnp.int32)
@@ -207,21 +261,17 @@ def action_tuple_to_candidate(action: tuple[int, int, int, int, int], probabilit
     )
 
 
-def top_policy_preview(
-    network: PolicyValueNetwork,
-    obs: Observation,
+def _top_policy_preview_from_logits(
+    logits: jnp.ndarray,
+    value: jnp.ndarray,
+    grid_size: int,
     top_k: int,
     policy_mode: PolicyMode,
 ) -> PolicyPreview:
-    """Return top semantic policy candidates with pass actions merged."""
+    """Return top semantic policy candidates with pass actions merged from logits."""
     if top_k <= 0:
         raise ValueError("top_k must be positive")
 
-    obs_arr = obs_to_array(obs)
-    mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
-    logits, value = network.logits_value(obs_arr, mask)
-
-    grid_size = obs.armies.shape[-1]
     grid_cells = grid_size * grid_size
     probabilities = np.asarray(jax.nn.softmax(logits))
     semantic_probs: dict[tuple[int, int, int, int, int], float] = {}
@@ -252,6 +302,33 @@ def top_policy_preview(
     )
 
 
+def top_policy_preview(
+    network: PolicyValueNetwork,
+    obs: Observation,
+    top_k: int,
+    policy_mode: PolicyMode,
+) -> PolicyPreview:
+    """Return top semantic policy candidates with pass actions merged."""
+    obs_arr = obs_to_array(obs)
+    mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
+    logits, value = network.logits_value(obs_arr, mask)
+    return _top_policy_preview_from_logits(logits, value, obs.armies.shape[-1], top_k, policy_mode)
+
+
+def top_policy_state_preview(
+    network: PolicyValueNetwork,
+    state: game.GameState,
+    player: int,
+    top_k: int,
+    policy_mode: PolicyMode,
+    policy_input: PolicyInput,
+) -> PolicyPreview:
+    """Return top policy candidates for a state-aware policy input mode."""
+    obs_arr, mask = policy_input_array_and_mask(state, player, policy_input)
+    logits, value = network.logits_value(obs_arr, mask)
+    return _top_policy_preview_from_logits(logits, value, state.armies.shape[-1], top_k, policy_mode)
+
+
 def greedy_policy_action(network: PolicyValueNetwork, obs: Observation) -> jnp.ndarray:
     """Select the maximum-logit valid action from a policy network."""
     obs_arr = obs_to_array(obs)
@@ -266,6 +343,21 @@ def sampled_policy_action(network: PolicyValueNetwork, obs: Observation, key: jn
     mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
     action, _, _, _ = network(obs_arr, mask, key, None)
     return normalize_action(action)
+
+
+def policy_state_action(
+    network: PolicyValueNetwork,
+    key: jnp.ndarray,
+    state: game.GameState,
+    player: int,
+    policy_mode: PolicyMode,
+    policy_input: PolicyInput,
+) -> jnp.ndarray:
+    """Select one action from either fogged observation or a state-aware policy input."""
+    obs_arr, mask = policy_input_array_and_mask(state, player, policy_input)
+    logits, _ = network.logits_value(obs_arr, mask)
+    index = jnp.argmax(logits) if policy_mode == "greedy" else jrandom.categorical(key, logits)
+    return index_to_action(index, state.armies.shape[-1])
 
 
 def parse_policy_channels(channels: str | tuple[int, int, int, int] | list[int] | None) -> PolicyChannels:
@@ -304,7 +396,8 @@ def load_policy_network(
         return eqx.tree_deserialise_leaves(path, network)
     except Exception as exc:
         raise ValueError(
-            f"Failed to load PPO checkpoint for grid_size={grid_size}, channels={parsed_channels}: {path}"
+            f"Failed to load PPO checkpoint for grid_size={grid_size}, "
+            f"channels={parsed_channels}, input_channels={input_channels}: {path}"
         ) from exc
 
 
@@ -318,6 +411,8 @@ class PPOPolicyAgent(Agent):
         policy_mode: PolicyMode = "greedy",
         agent_id: str = "PPO",
         channels: str | PolicyChannels | list[int] | None = None,
+        policy_input: PolicyInput = "observation",
+        input_channels: int | None = None,
         **kwargs: str,
     ):
         if "id" in kwargs:
@@ -331,26 +426,62 @@ class PPOPolicyAgent(Agent):
         super().__init__(agent_id)
         if policy_mode not in ("greedy", "sample"):
             raise ValueError("policy_mode must be 'greedy' or 'sample'")
+        if policy_input not in POLICY_INPUT_NAMES:
+            raise ValueError(f"policy_input must be one of {POLICY_INPUT_NAMES}")
+        expected_input_channels = policy_input_default_channels(policy_input)
+        if input_channels is None:
+            input_channels = expected_input_channels
+        if input_channels <= 0:
+            raise ValueError("input_channels must be positive")
+        if input_channels != expected_input_channels:
+            raise ValueError(
+                f"policy_input={policy_input!r} produces {expected_input_channels} input channels, "
+                f"got input_channels={input_channels}"
+            )
         self.grid_size = grid_size
         self.policy_mode: PolicyMode = policy_mode
+        self.policy_input: PolicyInput = policy_input
+        self.input_channels = input_channels
         self.channels = parse_policy_channels(channels)
-        self.network = load_policy_network(model_path, grid_size, channels=self.channels)
+        self.network = load_policy_network(
+            model_path,
+            grid_size,
+            channels=self.channels,
+            input_channels=self.input_channels,
+        )
+
+    def _validate_grid_shape(self, shape: tuple[int, ...]) -> None:
+        if shape != (self.grid_size, self.grid_size):
+            raise ValueError(f"PPO checkpoint expects {self.grid_size}x{self.grid_size} observations, got {shape}")
 
     def act(self, observation: Observation, key: jnp.ndarray) -> jnp.ndarray:
-        if observation.armies.shape != (self.grid_size, self.grid_size):
-            raise ValueError(
-                f"PPO checkpoint expects {self.grid_size}x{self.grid_size} observations, "
-                f"got {observation.armies.shape}"
-            )
+        if self.policy_input != "observation":
+            raise ValueError(f"policy_input={self.policy_input!r} requires act_for_state instead of act")
+        self._validate_grid_shape(observation.armies.shape)
         if self.policy_mode == "greedy":
             return greedy_policy_action(self.network, observation)
         return sampled_policy_action(self.network, observation, key)
 
+    def act_for_state(self, state: game.GameState, player: int, key: jnp.ndarray) -> jnp.ndarray:
+        """Return one action using the configured policy input for a full game state."""
+        self._validate_grid_shape(state.armies.shape)
+        return policy_state_action(self.network, key, state, player, self.policy_mode, self.policy_input)
+
     def explain(self, observation: Observation, top_k: int = 3) -> PolicyPreview:
         """Explain the current policy by returning the top semantic action candidates."""
-        if observation.armies.shape != (self.grid_size, self.grid_size):
-            raise ValueError(
-                f"PPO checkpoint expects {self.grid_size}x{self.grid_size} observations, "
-                f"got {observation.armies.shape}"
-            )
+        if self.policy_input != "observation":
+            raise ValueError(f"policy_input={self.policy_input!r} requires explain_for_state instead of explain")
+        self._validate_grid_shape(observation.armies.shape)
         return top_policy_preview(self.network, observation, top_k=top_k, policy_mode=self.policy_mode)
+
+    def explain_for_state(self, state: game.GameState, player: int, top_k: int = 3) -> PolicyPreview:
+        """Explain the configured policy input for a full game state."""
+        self._validate_grid_shape(state.armies.shape)
+        return top_policy_state_preview(
+            self.network,
+            state,
+            player=player,
+            top_k=top_k,
+            policy_mode=self.policy_mode,
+            policy_input=self.policy_input,
+        )

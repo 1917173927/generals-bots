@@ -119,6 +119,42 @@ def test_parse_args_accepts_model_1_alias_for_opponent(monkeypatch):
     assert args.opponent_model_path == "p1.eqx"
 
 
+def test_parse_args_accepts_separate_machine_policy_inputs(monkeypatch):
+    args = parse_raw_args(
+        monkeypatch,
+        "--machine-vs-machine",
+        "--model-0-path",
+        "p0.eqx",
+        "--model-1-path",
+        "p1.eqx",
+        "--model-0-policy-input",
+        "augmented-full-state",
+        "--model-1-policy-input",
+        "observation",
+    )
+
+    assert args.model_0_policy_input == "augmented-full-state"
+    assert args.model_1_policy_input == "observation"
+    assert args.model_0_input_channels == 18
+    assert args.model_1_input_channels == 9
+
+
+def test_parse_args_accepts_policy_input_aliases(monkeypatch):
+    args = parse_with_args(
+        monkeypatch,
+        "--machine-vs-machine",
+        "--policy-input",
+        "augmented-full-state",
+        "--opponent-policy-input",
+        "observation",
+    )
+
+    assert args.model_0_policy_input == "augmented-full-state"
+    assert args.model_1_policy_input == "observation"
+    assert args.model_0_input_channels == 18
+    assert args.model_1_input_channels == 9
+
+
 def test_parse_args_rejects_missing_primary_model(monkeypatch):
     with pytest.raises(SystemExit):
         parse_raw_args(monkeypatch, "--machine-vs-machine")
