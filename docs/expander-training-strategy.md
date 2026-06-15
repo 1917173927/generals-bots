@@ -653,11 +653,67 @@ player 1, seed 26221:
   win rate = 21.68%
 ```
 
+新增 general-target shaping 后，`train.py` 可以用完整 `GameState` 奖励强兵向敌方 general 靠近。该奖励是势能差：
+
+```text
+general_target_reward = scale * (potential_after - potential_before)
+```
+
+其中 potential 来自我方满足 `--general-target-min-army` 的 owned cells 到敌方 general 的最近曼哈顿距离。默认 scale 为 `0.0`，不改变旧训练。
+
+从 v5 开始训练攻击性候选：
+
+```bash
+JAX_PLATFORMS=cuda TF_GPU_ALLOCATOR=cuda_malloc_async XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/train.py 512 \
+  --grid-size 8 \
+  --map-generator generated \
+  --mountain-density-min 0.12 \
+  --mountain-density-max 0.22 \
+  --num-cities-min 4 \
+  --num-cities-max 8 \
+  --min-generals-distance 5 \
+  --pool-size 16384 \
+  --num-steps 64 \
+  --num-iterations 500 \
+  --num-epochs 4 \
+  --minibatch-size 4096 \
+  --lr 0.000005 \
+  --truncation 500 \
+  --policy-input augmented-full-state \
+  --init-model-path /tmp/generals-ppo-8x8-expander-gpu-v5.eqx \
+  --opponent-policy-path /tmp/generals-ppo-8x8-expander-gpu-v5.eqx \
+  --opponent-policy-mode sample \
+  --learner-player 0 \
+  --terminal-reward-scale 2.0 \
+  --general-target-reward-scale 0.05 \
+  --general-target-min-army 2 \
+  --model-path /tmp/generals-ppo-8x8-general-target-p0-v1.eqx \
+  --seed 26510
+```
+
+同 seed 评估结果：
+
+```text
+/tmp/generals-ppo-8x8-general-target-p0-v1.eqx, player 0, seed 26520:
+  candidate wins/losses/draws = 476/473/75
+  same-seed v5 baseline       = 488/450/86
+  prior best augmented p0     = 473/458/93
+
+player 1, seed 26521:
+  candidate wins/losses/draws = 434/487/103
+  same-seed v5 baseline       = 441/478/105
+  prior best augmented p0     = 441/483/100
+```
+
+结论：general-target shaping 让 player 0 的 draw rate 从 prior best 的 `9.08%` 降到 `7.32%`，平均终局时间从 `289.8` 降到 `285.9`，说明策略更偏进攻；但总胜率没有超过 v5，也没有超过 prior best。它可以作为攻击性调节旋钮继续研究，但不能替代当前最佳胜率候选。
+
 因此，当前 PPO best-response 结论是：
 
 - 18 通道输入能被 PPO 训练链路正常使用。
 - 从 v5 warm start 后，普通终局奖励只产生 2-5 个百分点级别的 seat-dependent 波动。
 - 更强 terminal reward 会加速策略崩坏，而不是学出 best response。
+- general-target shaping 会降低 draw rate/终局时间，但本次没有提升总胜率。
 - expanded-64 容量没有改善 PPO 吸收 hidden-state 信息的能力。
 
 #### 高 margin search 蒸馏中止记录

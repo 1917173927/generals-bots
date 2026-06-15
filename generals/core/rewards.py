@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 
+from generals.core.game import GameState
 from generals.core.observation import Observation
 
 
@@ -16,6 +17,44 @@ def compute_num_generals_owned(observation: Observation) -> jnp.ndarray:
     owned_generals_mask = observation.generals & observation.owned_cells
     num_generals_owned = jnp.sum(owned_generals_mask)
     return num_generals_owned.astype(jnp.float32)
+
+
+@jax.jit
+def general_target_potential(
+    state: GameState,
+    player: int,
+    max_distance: int = 16,
+    min_army: int = 2,
+) -> jnp.ndarray:
+    """Return attack pressure potential toward the opponent general."""
+    opponent = 1 - player
+    target = state.general_positions[opponent]
+    height, width = state.armies.shape
+    rows = jnp.arange(height)[:, None]
+    cols = jnp.arange(width)[None, :]
+    distances = jnp.abs(rows - target[0]) + jnp.abs(cols - target[1])
+    max_distance_f = jnp.maximum(max_distance, 1).astype(jnp.float32)
+    eligible = state.ownership[player] & state.passable & (state.armies >= min_army)
+    nearest = jnp.min(jnp.where(eligible, distances.astype(jnp.float32), max_distance_f))
+    nearest = jnp.minimum(nearest, max_distance_f)
+    potential = (max_distance_f - nearest) / max_distance_f
+    return jnp.where(jnp.any(eligible), potential, 0.0)
+
+
+@jax.jit
+def general_target_reward_fn(
+    prior_state: GameState,
+    state: GameState,
+    player: int,
+    scale: float = 0.0,
+    max_distance: int = 16,
+    min_army: int = 2,
+) -> jnp.ndarray:
+    """Reward progress by strong owned cells toward the opponent general."""
+    prior_potential = general_target_potential(prior_state, player, max_distance, min_army)
+    current_potential = general_target_potential(state, player, max_distance, min_army)
+    active = (prior_state.winner < 0) & (state.winner < 0)
+    return jnp.where(active, scale * (current_potential - prior_potential), 0.0)
 
 
 @jax.jit

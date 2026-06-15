@@ -6,6 +6,7 @@ import jax.random as jrandom
 from examples._experimental.ppo.common import POLICY_INPUT_NAME_TO_ID, policy_network_action
 from examples._experimental.ppo.evaluate_policy import evaluate_policy_opponent_batch, summarize_policy_results
 from examples._experimental.ppo.train import (
+    apply_general_target_rewards,
     apply_terminal_reward,
     load_or_create_network,
     resolve_opponent_source,
@@ -163,6 +164,39 @@ def test_apply_terminal_reward_only_adjusts_decisive_terminal_games():
     adjusted = apply_terminal_reward(rewards, info, learner_player=1, terminal_reward_scale=2.0)
 
     assert jnp.allclose(adjusted, jnp.array([-1.9, 2.2, 0.3, 0.4], dtype=jnp.float32))
+
+
+def make_general_target_state(player_cell):
+    grid = jnp.zeros((5, 5), dtype=jnp.int32).at[0, 0].set(1).at[4, 4].set(2)
+    state = game.create_initial_state(grid)
+    row, col = player_cell
+    return state._replace(
+        armies=state.armies.at[0, 0].set(1).at[row, col].set(5),
+        ownership=state.ownership.at[0, row, col].set(True),
+        ownership_neutral=state.ownership_neutral.at[row, col].set(False),
+    )
+
+
+def test_apply_general_target_rewards_adds_state_shaping_to_rollout_rewards():
+    prior = make_general_target_state((0, 0))
+    closer = make_general_target_state((1, 0))
+    farther = make_general_target_state((0, 0))
+    prior_states = jax.tree.map(lambda a, b: jnp.stack([a, b]), prior, closer)
+    current_states = jax.tree.map(lambda a, b: jnp.stack([a, b]), closer, farther)
+    rewards = jnp.array([0.0, 0.0], dtype=jnp.float32)
+
+    adjusted = apply_general_target_rewards(
+        rewards,
+        prior_states,
+        current_states,
+        learner_player=0,
+        general_target_reward_scale=1.0,
+        general_target_max_distance=8,
+        general_target_min_army=2,
+    )
+
+    assert adjusted[0] > 0.0
+    assert adjusted[1] < 0.0
 
 
 def test_stack_learner_actions_places_actions_in_selected_player_slot():

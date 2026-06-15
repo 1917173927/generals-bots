@@ -20,7 +20,7 @@ import optax
 from generals.core.action import compute_valid_move_mask
 from generals.core import game
 from generals.core.grid import generate_grid
-from generals.core.rewards import composite_reward_fn
+from generals.core.rewards import composite_reward_fn, general_target_reward_fn
 
 from common import (
     OPPONENT_NAME_TO_ID,
@@ -206,6 +206,29 @@ def apply_terminal_reward(rewards, infos, learner_player, terminal_reward_scale)
     return rewards + terminal_bonus
 
 
+def apply_general_target_rewards(
+    rewards,
+    prior_states,
+    states,
+    learner_player,
+    general_target_reward_scale,
+    general_target_max_distance,
+    general_target_min_army,
+):
+    """Add state-aware pressure shaping toward the opponent general."""
+    shaping = jax.vmap(
+        lambda prior_state, state: general_target_reward_fn(
+            prior_state,
+            state,
+            learner_player,
+            general_target_reward_scale,
+            general_target_max_distance,
+            general_target_min_army,
+        )
+    )(prior_states, states)
+    return rewards + shaping
+
+
 @eqx.filter_jit
 def rollout_step(
     states,
@@ -217,6 +240,9 @@ def rollout_step(
     learner_player,
     terminal_reward_scale,
     policy_input=0,
+    general_target_reward_scale=0.0,
+    general_target_max_distance=16,
+    general_target_min_army=2,
 ):
     """Vectorized rollout step for all environments."""
     num_envs = states.armies.shape[0]
@@ -255,6 +281,15 @@ def rollout_step(
     # Compute rewards using composite reward function
     rewards = jax.vmap(composite_reward_fn)(
         learner_obs_prior, learner_actions, learner_obs_new
+    )
+    rewards = apply_general_target_rewards(
+        rewards,
+        states,
+        new_states,
+        learner_player,
+        general_target_reward_scale,
+        general_target_max_distance,
+        general_target_min_army,
     )
     rewards = apply_terminal_reward(rewards, infos, learner_player, terminal_reward_scale)
     
@@ -295,6 +330,9 @@ def rollout_step_policy_opponent(
     terminal_reward_scale,
     policy_input=0,
     opponent_policy_input=0,
+    general_target_reward_scale=0.0,
+    general_target_max_distance=16,
+    general_target_min_army=2,
 ):
     """Vectorized rollout step against a frozen policy checkpoint opponent."""
     num_envs = states.armies.shape[0]
@@ -338,6 +376,15 @@ def rollout_step_policy_opponent(
     obs_p1_new = jax.vmap(lambda s: game.get_observation(s, 1))(new_states)
     learner_obs_new = select_learner_obs(obs_p0_new, obs_p1_new, learner_player)
     rewards = jax.vmap(composite_reward_fn)(learner_obs_prior, learner_actions, learner_obs_new)
+    rewards = apply_general_target_rewards(
+        rewards,
+        states,
+        new_states,
+        learner_player,
+        general_target_reward_scale,
+        general_target_max_distance,
+        general_target_min_army,
+    )
     rewards = apply_terminal_reward(rewards, infos, learner_player, terminal_reward_scale)
 
     terminated = infos.is_done
@@ -518,6 +565,24 @@ def main():
         help="Optional win/loss reward added on decisive terminal transitions.",
     )
     parser.add_argument(
+        "--general-target-reward-scale",
+        type=float,
+        default=0.0,
+        help="Optional shaping reward for reducing distance from strong owned cells to the opponent general.",
+    )
+    parser.add_argument(
+        "--general-target-max-distance",
+        type=int,
+        default=None,
+        help="Distance horizon for --general-target-reward-scale. Defaults to the map Manhattan diameter.",
+    )
+    parser.add_argument(
+        "--general-target-min-army",
+        type=int,
+        default=2,
+        help="Minimum army count for owned cells that count as pressure toward the opponent general.",
+    )
+    parser.add_argument(
         "--policy-input",
         choices=POLICY_INPUT_NAMES,
         default="observation",
@@ -618,6 +683,13 @@ def main():
         parser.error("--minibatch-size must be positive when provided")
     if args.terminal_reward_scale < 0.0:
         parser.error("--terminal-reward-scale must be non-negative")
+    if args.general_target_reward_scale < 0.0:
+        parser.error("--general-target-reward-scale must be non-negative")
+    if args.general_target_max_distance is not None and args.general_target_max_distance <= 0:
+        parser.error("--general-target-max-distance must be positive when provided")
+    if args.general_target_min_army <= 0:
+        parser.error("--general-target-min-army must be positive")
+    general_target_max_distance = args.general_target_max_distance or max(1, 2 * (grid_size - 1))
     if args.input_channels is not None and args.input_channels <= 0:
         parser.error("--input-channels must be positive")
     if args.init_input_channels is not None and args.init_input_channels <= 0:
@@ -675,6 +747,12 @@ def main():
     print(f"PPO updates:   epochs={args.num_epochs}, minibatch={args.minibatch_size or num_envs * num_steps}")
     if args.terminal_reward_scale > 0.0:
         print(f"Terminal rw:   +/-{args.terminal_reward_scale:g}")
+    if args.general_target_reward_scale > 0.0:
+        print(
+            "General target:"
+            f" scale={args.general_target_reward_scale:g}, "
+            f"max_dist={general_target_max_distance}, min_army={args.general_target_min_army}"
+        )
     if args.init_model_path is not None:
         print(f"Warm start:    {args.init_model_path}")
     print()
@@ -735,6 +813,9 @@ def main():
                 args.learner_player,
                 args.terminal_reward_scale,
                 policy_input,
+                args.general_target_reward_scale,
+                general_target_max_distance,
+                args.general_target_min_army,
             )
         else:
             active_opponent_network = network if opponent_source == "current" else opponent_network
@@ -750,6 +831,9 @@ def main():
                 args.terminal_reward_scale,
                 policy_input,
                 opponent_policy_input,
+                args.general_target_reward_scale,
+                general_target_max_distance,
+                args.general_target_min_army,
             )
     jax.block_until_ready(states)
     
@@ -772,6 +856,9 @@ def main():
                     args.learner_player,
                     args.terminal_reward_scale,
                     policy_input,
+                    args.general_target_reward_scale,
+                    general_target_max_distance,
+                    args.general_target_min_army,
                 )
             else:
                 active_opponent_network = network if opponent_source == "current" else opponent_network
@@ -787,6 +874,9 @@ def main():
                     args.terminal_reward_scale,
                     policy_input,
                     opponent_policy_input,
+                    args.general_target_reward_scale,
+                    general_target_max_distance,
+                    args.general_target_min_army,
                 )
             rollout_data.append(data)
         jax.block_until_ready(states)
