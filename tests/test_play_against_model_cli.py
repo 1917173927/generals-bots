@@ -5,7 +5,9 @@ from examples.play_against_model import (
     advance_until_human_can_move,
     auto_tick_due,
     choose_human_action,
+    choose_machine_actions,
     human_can_move,
+    make_player_names,
     parse_args,
 )
 from generals.core import game
@@ -76,6 +78,21 @@ def test_parse_args_accepts_auto_tick_options(monkeypatch):
     assert args.tick_rate == 2.5
 
 
+def test_parse_args_accepts_machine_vs_machine_options(monkeypatch):
+    args = parse_with_args(
+        monkeypatch,
+        "--machine-vs-machine",
+        "--opponent-model-path",
+        "opponent.eqx",
+        "--opponent-policy-mode",
+        "greedy",
+    )
+
+    assert args.machine_vs_machine is True
+    assert args.opponent_model_path == "opponent.eqx"
+    assert args.opponent_policy_mode == "greedy"
+
+
 def test_parse_args_rejects_nonpositive_tick_rate(monkeypatch):
     with pytest.raises(SystemExit):
         parse_with_args(monkeypatch, "--tick-rate", "0")
@@ -110,3 +127,29 @@ def test_choose_human_action_passes_only_on_auto_tick():
     assert choose_human_action(manual_action, auto_tick_ready=True).tolist() == manual_action.tolist()
     assert choose_human_action(None, auto_tick_ready=True).tolist() == [1, 0, 0, 0, 0]
     assert choose_human_action(None, auto_tick_ready=False) is None
+
+
+def test_machine_vs_machine_player_names_do_not_include_human():
+    assert make_player_names(human_player=0, machine_vs_machine=True) == ["PPO 0", "PPO 1"]
+
+
+def test_choose_machine_actions_uses_both_player_observations():
+    class FixedAgent:
+        def __init__(self, action):
+            self.action = jnp.array(action, dtype=jnp.int32)
+
+        def act(self, observation, key):
+            return self.action
+
+    grid = jnp.zeros((4, 4), dtype=jnp.int32)
+    grid = grid.at[0, 0].set(1)
+    grid = grid.at[3, 3].set(2)
+    state = game.create_initial_state(grid)
+    agents = (
+        FixedAgent([1, 0, 0, 0, 0]),
+        FixedAgent([0, 3, 3, 0, 0]),
+    )
+
+    actions = choose_machine_actions(state, agents, jnp.array([0, 1], dtype=jnp.uint32))
+
+    assert actions.tolist() == [[1, 0, 0, 0, 0], [0, 3, 3, 0, 0]]

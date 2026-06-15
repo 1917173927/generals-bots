@@ -2,6 +2,7 @@
 
 import argparse
 import time
+from typing import Protocol
 
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -15,6 +16,11 @@ from generals.core.rendering import JaxGameAdapter
 from generals.gui import GUI
 from generals.gui.event_handler import GameCommand
 from generals.gui.properties import GuiMode
+
+
+class PlayAgent(Protocol):
+    def act(self, observation, key: jnp.ndarray) -> jnp.ndarray:
+        """Return one public Generals action."""
 
 
 def make_simple_general_grid(key: jnp.ndarray, grid_size: int) -> jnp.ndarray:
@@ -49,6 +55,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grid-size", type=int, default=8, help="Square map size used by the saved model.")
     parser.add_argument("--map-generator", choices=("simple", "generated"), default="generated")
     parser.add_argument("--policy-mode", choices=("greedy", "sample"), default="sample")
+    parser.add_argument("--machine-vs-machine", action="store_true", help="Watch two PPO agents play each other.")
+    parser.add_argument(
+        "--opponent-model-path",
+        default=None,
+        help="Second PPO checkpoint for machine-vs-machine mode.",
+    )
+    parser.add_argument("--opponent-policy-mode", choices=("greedy", "sample"), default=None)
     parser.add_argument("--human-player", type=int, choices=(0, 1), default=0)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
@@ -110,7 +123,9 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def make_player_names(human_player: int) -> list[str]:
+def make_player_names(human_player: int, machine_vs_machine: bool = False) -> list[str]:
+    if machine_vs_machine:
+        return ["PPO 0", "PPO 1"]
     names = ["PPO Model", "PPO Model"]
     names[human_player] = "Human"
     names[1 - human_player] = "PPO Model"
@@ -161,6 +176,17 @@ def choose_human_action(command_action: jnp.ndarray | None, auto_tick_ready: boo
     return None
 
 
+def choose_machine_actions(state: game.GameState, agents: tuple[PlayAgent, PlayAgent], key: jnp.ndarray) -> jnp.ndarray:
+    """Choose simultaneous actions for both machine players."""
+    key_0, key_1 = jrandom.split(key)
+    return jnp.stack(
+        [
+            agents[0].act(game.get_observation(state, 0), key_0),
+            agents[1].act(game.get_observation(state, 1), key_1),
+        ]
+    )
+
+
 def print_game_result(info: game.GameInfo, names: list[str], step_count: int, reached_limit: bool = False) -> None:
     if reached_limit and int(info.winner) < 0:
         print(f"Reached max steps ({step_count}) without a winner. Press R to restart or Q to quit.")
@@ -173,20 +199,43 @@ def main() -> None:
     args = parse_args()
     model_player = 1 - args.human_player
     key = jrandom.PRNGKey(args.seed)
-    policy_agent = PPOPolicyAgent(args.model_path, args.grid_size, args.policy_mode, agent_id="PPO Model")
-    names = make_player_names(args.human_player)
-    agent_data = {
-        "Human": {"color": (220, 55, 55)},
-        "PPO Model": {"color": (40, 90, 220)},
-    }
+    names = make_player_names(args.human_player, machine_vs_machine=args.machine_vs_machine)
+    if args.machine_vs_machine:
+        opponent_model_path = args.opponent_model_path or args.model_path
+        opponent_policy_mode = args.opponent_policy_mode or args.policy_mode
+        machine_agents = (
+            PPOPolicyAgent(args.model_path, args.grid_size, args.policy_mode, agent_id=names[0]),
+            PPOPolicyAgent(opponent_model_path, args.grid_size, opponent_policy_mode, agent_id=names[1]),
+        )
+        policy_agent = machine_agents[0]
+        preview_player = 0
+    else:
+        machine_agents = None
+        policy_agent = PPOPolicyAgent(args.model_path, args.grid_size, args.policy_mode, agent_id="PPO Model")
+        preview_player = model_player
+
+    agent_data = (
+        {
+            "PPO 0": {"color": (220, 55, 55)},
+            "PPO 1": {"color": (40, 90, 220)},
+        }
+        if args.machine_vs_machine
+        else {
+            "Human": {"color": (220, 55, 55)},
+            "PPO Model": {"color": (40, 90, 220)},
+        }
+    )
 
     def new_game():
         nonlocal key
         key, map_key = jrandom.split(key)
         state = create_initial_state(make_grid(args, map_key))
-        state, info, auto_passes = advance_until_human_can_move(state, args.human_player)
-        if auto_passes:
-            print(f"Auto-passed {auto_passes} opening turns so your first move is available.")
+        if args.machine_vs_machine:
+            info = game.get_info(state)
+        else:
+            state, info, auto_passes = advance_until_human_can_move(state, args.human_player)
+            if auto_passes:
+                print(f"Auto-passed {auto_passes} opening turns so your first move is available.")
         return state, info
 
     state, info = new_game()
@@ -199,10 +248,12 @@ def main() -> None:
         human_player=args.human_player,
     )
 
-    print(
-        "Controls: left-click source, left-click adjacent target, S split, P pass, Esc/right-click cancel, R restart."
-    )
-    print(f"Playing as player {args.human_player} on {args.grid_size}x{args.grid_size}.")
+    if args.machine_vs_machine:
+        print("Watching PPO 0 vs PPO 1. Press R after game over to restart, Q to quit.")
+    else:
+        print("Controls: left-click source, left-click adjacent target, S split, P pass, Esc/right-click cancel.")
+        print("Press R after game over to restart, Q to quit.")
+        print(f"Playing as player {args.human_player} on {args.grid_size}x{args.grid_size}.")
     if args.ai_preview:
         print(f"AI preview: showing top {args.preview_top_k} PPO candidate actions in the right panel.")
     if args.auto_tick:
@@ -217,7 +268,7 @@ def main() -> None:
             reached_limit = step_count >= args.max_steps and int(info.winner) < 0
             game_done = bool(info.is_done) or reached_limit
             if args.ai_preview and not game_done:
-                model_obs = game.get_observation(state, model_player)
+                model_obs = game.get_observation(state, preview_player)
                 gui.set_policy_preview(policy_agent.explain(model_obs, top_k=args.preview_top_k))
             else:
                 gui.clear_policy_preview()
@@ -246,6 +297,18 @@ def main() -> None:
                 continue
 
             now = time.monotonic()
+            if args.machine_vs_machine:
+                if not auto_tick_due(args.auto_tick, None, now, last_tick, args.tick_rate):
+                    continue
+                key, action_key = jrandom.split(key)
+                assert machine_agents is not None
+                actions = choose_machine_actions(state, machine_agents, action_key)
+                state, info = game.step(state, actions)
+                game_adapter.update_from_state(state, info)
+                step_count += 1
+                last_tick = now
+                continue
+
             auto_ready = auto_tick_due(
                 args.auto_tick,
                 command.selected_cell,
