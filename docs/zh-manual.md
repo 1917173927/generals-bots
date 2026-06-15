@@ -311,6 +311,8 @@ uv run python examples/vectorized_example.py
 examples/_experimental/ppo/
 ```
 
+如果目标是复现或继续推进“对 Expander 胜率超过 90%”的训练路线，先阅读专门指南：[Expander 对抗训练流程与策略](expander-training-strategy.md)。该指南记录了行为克隆 warm start、PPO-vs-Expander fine-tune、多 seed 镜像评估和最终 checkpoint 的验收口径。
+
 主要脚本：
 
 - `train.py`：基于 raw game API 的 PPO 训练路径，当前推荐作为快速实验入口。

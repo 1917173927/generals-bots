@@ -2,7 +2,7 @@
 
 `generals-bots` 是一个基于 JAX 的 Generals.io 双人对战模拟器与 bot 实验框架。项目目标是提供可复现、可批量并行、适合强化学习研究的游戏环境。
 
-更完整的中文手册见 [docs/zh-manual.md](docs/zh-manual.md)。
+更完整的中文手册见 [docs/zh-manual.md](docs/zh-manual.md)。超过 Expander 的训练过程与策略见 [docs/expander-training-strategy.md](docs/expander-training-strategy.md)。
 
 ## 项目概览
 
