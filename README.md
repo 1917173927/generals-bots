@@ -115,6 +115,7 @@ uv run python examples/visualization_example.py
 `play-v5.command` 会使用 `uv run --python 3.12` 启动当前仓库根目录的
 `generals-ppo-8x8-expander-gpu-v5.eqx`，默认玩家为 player 0，PPO 为
 player 1，8x8 generated 地图，greedy 策略，并展示 Top-3 候选动作。
+开局会自动跳过双方都无法移动的初始 pass 回合，因此窗口第一帧即可点击自己的格子移动。
 macOS 下也可以在 Finder 中双击该脚本启动。若 checkpoint 不在仓库根目录，
 可设置 `MODEL_PATH=/path/to/model.eqx ./play-v5.command`。
 

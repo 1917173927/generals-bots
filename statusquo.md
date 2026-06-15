@@ -147,3 +147,9 @@
 - **Status:** Completed
 - **Next Steps:** Use `./play-v5.command` or double-click it in Finder to start the 8x8 generated human-vs-PPO match.
 - **Context:** The launcher pins `uv run --python 3.12` to avoid pygame source builds under Python 3.14 and expects the v5 `.eqx` checkpoint in the repository root unless `MODEL_PATH` is set.
+
+## [2026-06-15 21:44] Playable Opening Warmup
+- **Changes:** Added playable-mode opening auto-pass logic so human-vs-PPO games start on a frame where the human has at least one legal move; added regression coverage and documented the behavior.
+- **Status:** Completed
+- **Next Steps:** Restart the match with `./play-v5.command` so the first visible board is already clickable.
+- **Context:** Initial Generals states place each general at 1 army, while GUI source selection correctly requires `armies > 1`; without two opening pass turns, every first-frame click is rejected as an invalid source.

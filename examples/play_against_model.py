@@ -8,6 +8,7 @@ import jax.random as jrandom
 
 from generals.agents import PPOPolicyAgent
 from generals.core import game
+from generals.core.action import compute_valid_move_mask, create_action
 from generals.core.game import create_initial_state
 from generals.core.grid import generate_grid
 from generals.core.rendering import JaxGameAdapter
@@ -102,6 +103,28 @@ def make_player_names(human_player: int) -> list[str]:
     return names
 
 
+def human_can_move(state: game.GameState, human_player: int) -> bool:
+    """Return whether the human player has at least one legal move."""
+    obs = game.get_observation(state, human_player)
+    valid_moves = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
+    return bool(jnp.any(valid_moves))
+
+
+def advance_until_human_can_move(
+    state: game.GameState,
+    human_player: int,
+    max_auto_passes: int = 10,
+) -> tuple[game.GameState, game.GameInfo, int]:
+    """Auto-pass the unplayable opening turns so the first frame accepts clicks."""
+    info = game.get_info(state)
+    pass_actions = jnp.stack([create_action(to_pass=True), create_action(to_pass=True)])
+    auto_passes = 0
+    while not bool(info.is_done) and not human_can_move(state, human_player) and auto_passes < max_auto_passes:
+        state, info = game.step(state, pass_actions)
+        auto_passes += 1
+    return state, info, auto_passes
+
+
 def print_game_result(info: game.GameInfo, names: list[str], step_count: int, reached_limit: bool = False) -> None:
     if reached_limit and int(info.winner) < 0:
         print(f"Reached max steps ({step_count}) without a winner. Press R to restart or Q to quit.")
@@ -125,7 +148,9 @@ def main() -> None:
         nonlocal key
         key, map_key = jrandom.split(key)
         state = create_initial_state(make_grid(args, map_key))
-        info = game.get_info(state)
+        state, info, auto_passes = advance_until_human_can_move(state, args.human_player)
+        if auto_passes:
+            print(f"Auto-passed {auto_passes} opening turns so your first move is available.")
         return state, info
 
     state, info = new_game()
@@ -138,7 +163,9 @@ def main() -> None:
         human_player=args.human_player,
     )
 
-    print("Controls: left-click source, left-click adjacent target, S split, P pass, Esc/right-click cancel, R restart.")
+    print(
+        "Controls: left-click source, left-click adjacent target, S split, P pass, Esc/right-click cancel, R restart."
+    )
     print(f"Playing as player {args.human_player} on {args.grid_size}x{args.grid_size}.")
     if args.ai_preview:
         print(f"AI preview: showing top {args.preview_top_k} PPO candidate actions in the right panel.")

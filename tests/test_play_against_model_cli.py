@@ -1,6 +1,8 @@
+import jax.numpy as jnp
 import pytest
 
-from examples.play_against_model import parse_args
+from examples.play_against_model import advance_until_human_can_move, human_can_move, parse_args
+from generals.core import game
 
 
 def parse_with_args(monkeypatch, *args):
@@ -57,3 +59,19 @@ def test_parse_args_rejects_preview_top_k_below_range(monkeypatch):
 def test_parse_args_rejects_preview_top_k_above_range(monkeypatch):
     with pytest.raises(SystemExit):
         parse_with_args(monkeypatch, "--preview-top-k", "6")
+
+
+def test_advance_until_human_can_move_skips_initial_no_move_turns():
+    grid = jnp.zeros((4, 4), dtype=jnp.int32)
+    grid = grid.at[0, 0].set(1)
+    grid = grid.at[3, 3].set(2)
+    state = game.create_initial_state(grid)
+
+    assert human_can_move(state, human_player=0) is False
+
+    warmed_state, warmed_info, auto_passes = advance_until_human_can_move(state, human_player=0)
+
+    assert auto_passes == 2
+    assert int(warmed_state.time) == 2
+    assert int(warmed_info.time) == 2
+    assert human_can_move(warmed_state, human_player=0) is True
