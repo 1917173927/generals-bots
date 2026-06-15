@@ -29,10 +29,21 @@ from generals.agents.ppo_policy_agent import parse_policy_channels
 from generals.core import game
 from generals.core.action import compute_valid_move_mask
 
-from common import POLICY_MODE_NAME_TO_ID, POLICY_MODE_NAMES, make_grids, policy_network_action
+from common import (
+    POLICY_INPUT_NAME_TO_ID,
+    POLICY_INPUT_NAMES,
+    POLICY_MODE_NAME_TO_ID,
+    POLICY_MODE_NAMES,
+    make_grids,
+    policy_input_array_and_mask,
+    policy_network_action,
+    policy_state_action,
+)
 from network import obs_to_array
 from search_policy import rollout_search_candidates
 from train import load_or_create_network, stack_learner_actions
+
+TARGET_MODE_NAMES = ("hard", "soft")
 
 
 def select_search_improvements(
@@ -57,11 +68,27 @@ def select_search_improvements(
     return target_indices.astype(jnp.int32), weights.astype(jnp.float32), margins.astype(jnp.float32)
 
 
+def search_score_target_probs(search_scores, temperature: float):
+    """Convert top-k rollout-search scores into a stable soft target distribution."""
+    centered_scores = search_scores - jnp.max(search_scores, axis=-1, keepdims=True)
+    return jax.nn.softmax(centered_scores / temperature, axis=-1)
+
+
+def weighted_topk_cross_entropy(log_probs, candidate_indices, target_probs, weights):
+    """Return weighted CE over sparse top-k candidate targets."""
+    candidate_log_probs = jnp.take_along_axis(log_probs, candidate_indices, axis=1)
+    losses = -jnp.sum(target_probs * candidate_log_probs, axis=-1)
+    normalizer = jnp.maximum(jnp.sum(weights), 1.0)
+    return jnp.sum(losses * weights) / normalizer
+
+
 def compute_conservative_loss(
     student_network,
     base_network,
     obs,
     masks,
+    base_obs,
+    base_masks,
     target_indices,
     improve_weights,
     kl_weights,
@@ -80,7 +107,10 @@ def compute_conservative_loss(
         masks,
     )
     base_logits = jax.lax.stop_gradient(
-        jax.vmap(lambda sample_obs, sample_mask: logits_for_sample(base_network, sample_obs, sample_mask))(obs, masks)
+        jax.vmap(lambda sample_obs, sample_mask: logits_for_sample(base_network, sample_obs, sample_mask))(
+            base_obs,
+            base_masks,
+        )
     )
 
     student_log_probs_for_kl = jax.nn.log_softmax(student_logits / temperature, axis=-1)
@@ -109,6 +139,63 @@ def compute_conservative_loss(
     return loss, metrics
 
 
+def compute_soft_conservative_loss(
+    student_network,
+    base_network,
+    obs,
+    masks,
+    base_obs,
+    base_masks,
+    candidate_indices,
+    target_probs,
+    search_weights,
+    kl_weights,
+    kl_weight: float,
+    improve_weight: float,
+    temperature: float,
+):
+    """Return KL-to-base plus weighted soft top-k search-score loss."""
+
+    def logits_for_sample(network, sample_obs, sample_mask):
+        logits, _ = network.logits_value(sample_obs, sample_mask)
+        return logits
+
+    student_logits = jax.vmap(lambda sample_obs, sample_mask: logits_for_sample(student_network, sample_obs, sample_mask))(
+        obs,
+        masks,
+    )
+    base_logits = jax.lax.stop_gradient(
+        jax.vmap(lambda sample_obs, sample_mask: logits_for_sample(base_network, sample_obs, sample_mask))(
+            base_obs,
+            base_masks,
+        )
+    )
+
+    student_log_probs_for_kl = jax.nn.log_softmax(student_logits / temperature, axis=-1)
+    base_log_probs = jax.nn.log_softmax(base_logits / temperature, axis=-1)
+    base_probs = jax.nn.softmax(base_logits / temperature, axis=-1)
+    kl_per_sample = jnp.sum(base_probs * (base_log_probs - student_log_probs_for_kl), axis=-1)
+    kl_normalizer = jnp.maximum(jnp.sum(kl_weights), 1.0)
+    kl_loss = jnp.sum(kl_per_sample * kl_weights) / kl_normalizer
+
+    student_log_probs = jax.nn.log_softmax(student_logits, axis=-1)
+    search_loss = weighted_topk_cross_entropy(student_log_probs, candidate_indices, target_probs, search_weights)
+    loss = kl_weight * kl_loss + improve_weight * search_loss
+
+    best_targets = jnp.take_along_axis(candidate_indices, jnp.argmax(target_probs, axis=-1)[:, None], axis=1)[:, 0]
+    search_normalizer = jnp.maximum(jnp.sum(search_weights), 1.0)
+    accuracy = jnp.sum((jnp.argmax(student_logits, axis=-1) == best_targets) * search_weights) / search_normalizer
+    target_entropy = -jnp.sum(target_probs * jnp.log(jnp.clip(target_probs, 1e-8, 1.0)), axis=-1)
+    metrics = {
+        "kl_loss": kl_loss,
+        "improve_loss": search_loss,
+        "selected_fraction": jnp.sum(search_weights) / kl_normalizer,
+        "accuracy": accuracy,
+        "target_entropy": jnp.sum(target_entropy * search_weights) / search_normalizer,
+    }
+    return loss, metrics
+
+
 @eqx.filter_jit
 def train_conservative_minibatch(
     student_network,
@@ -121,7 +208,7 @@ def train_conservative_minibatch(
     temperature,
 ):
     """Train one conservative search-distillation minibatch."""
-    obs, masks, target_indices, improve_weights, kl_weights = minibatch
+    obs, masks, base_obs, base_masks, target_indices, improve_weights, kl_weights = minibatch
 
     def loss_fn(net):
         return compute_conservative_loss(
@@ -129,6 +216,8 @@ def train_conservative_minibatch(
             base_network,
             obs,
             masks,
+            base_obs,
+            base_masks,
             target_indices,
             improve_weights,
             kl_weights,
@@ -144,16 +233,71 @@ def train_conservative_minibatch(
     return student_network, opt_state, loss, metrics
 
 
-def flatten_conservative_batch(obs, masks, target_indices, improve_weights, kl_weights, margins):
+@eqx.filter_jit
+def train_soft_minibatch(
+    student_network,
+    base_network,
+    opt_state,
+    minibatch,
+    optimizer,
+    kl_weight,
+    improve_weight,
+    temperature,
+):
+    """Train one soft search-score distillation minibatch."""
+    obs, masks, base_obs, base_masks, candidate_indices, target_probs, search_weights, kl_weights = minibatch
+
+    def loss_fn(net):
+        return compute_soft_conservative_loss(
+            net,
+            base_network,
+            obs,
+            masks,
+            base_obs,
+            base_masks,
+            candidate_indices,
+            target_probs,
+            search_weights,
+            kl_weights,
+            kl_weight,
+            improve_weight,
+            temperature,
+        )
+
+    (loss, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(student_network)
+    params = eqx.filter(student_network, eqx.is_inexact_array)
+    updates, opt_state = optimizer.update(grads, opt_state, params)
+    student_network = eqx.apply_updates(student_network, updates)
+    return student_network, opt_state, loss, metrics
+
+
+def flatten_conservative_batch(obs, masks, base_obs, base_masks, target_indices, improve_weights, kl_weights, margins):
     """Flatten time/environment axes for conservative distillation updates."""
     batch_size = obs.shape[0] * obs.shape[1]
     return (
         obs.reshape(batch_size, *obs.shape[2:]),
         masks.reshape(batch_size, *masks.shape[2:]),
+        base_obs.reshape(batch_size, *base_obs.shape[2:]),
+        base_masks.reshape(batch_size, *base_masks.shape[2:]),
         target_indices.reshape(batch_size),
         improve_weights.reshape(batch_size),
         kl_weights.reshape(batch_size),
         margins.reshape(batch_size),
+    )
+
+
+def flatten_soft_batch(obs, masks, base_obs, base_masks, candidate_indices, target_probs, search_weights, kl_weights):
+    """Flatten time/environment axes for soft search-score distillation."""
+    batch_size = obs.shape[0] * obs.shape[1]
+    return (
+        obs.reshape(batch_size, *obs.shape[2:]),
+        masks.reshape(batch_size, *masks.shape[2:]),
+        base_obs.reshape(batch_size, *base_obs.shape[2:]),
+        base_masks.reshape(batch_size, *base_masks.shape[2:]),
+        candidate_indices.reshape(batch_size, *candidate_indices.shape[2:]),
+        target_probs.reshape(batch_size, *target_probs.shape[2:]),
+        search_weights.reshape(batch_size),
+        kl_weights.reshape(batch_size),
     )
 
 
@@ -171,7 +315,7 @@ def train_conservative_epoch(
     temperature,
 ):
     """Run conservative distillation over shuffled minibatches."""
-    obs, masks, target_indices, improve_weights, kl_weights, margins = flat_batch
+    obs, masks, base_obs, base_masks, target_indices, improve_weights, kl_weights, margins = flat_batch
     batch_size = obs.shape[0]
     actual_minibatch_size = min(minibatch_size, batch_size)
     num_complete_batches = max(batch_size // actual_minibatch_size, 1)
@@ -184,6 +328,8 @@ def train_conservative_epoch(
         shuffled = (
             obs[permutation],
             masks[permutation],
+            base_obs[permutation],
+            base_masks[permutation],
             target_indices[permutation],
             improve_weights[permutation],
             kl_weights[permutation],
@@ -222,6 +368,72 @@ def train_conservative_epoch(
     return student_network, opt_state, avg_loss, avg_metrics, key
 
 
+def train_soft_epoch(
+    student_network,
+    base_network,
+    opt_state,
+    flat_batch,
+    optimizer,
+    key,
+    num_epochs,
+    minibatch_size,
+    kl_weight,
+    improve_weight,
+    temperature,
+):
+    """Run soft search-score distillation over shuffled minibatches."""
+    obs, masks, base_obs, base_masks, candidate_indices, target_probs, search_weights, kl_weights = flat_batch
+    batch_size = obs.shape[0]
+    actual_minibatch_size = min(minibatch_size, batch_size)
+    num_complete_batches = max(batch_size // actual_minibatch_size, 1)
+    avg_loss = 0.0
+    avg_metrics = None
+
+    for _ in range(num_epochs):
+        key, permutation_key = jrandom.split(key)
+        permutation = jrandom.permutation(permutation_key, batch_size)
+        shuffled = (
+            obs[permutation],
+            masks[permutation],
+            base_obs[permutation],
+            base_masks[permutation],
+            candidate_indices[permutation],
+            target_probs[permutation],
+            search_weights[permutation],
+            kl_weights[permutation],
+        )
+        epoch_loss = 0.0
+        epoch_metrics = None
+
+        for batch_idx in range(num_complete_batches):
+            start = batch_idx * actual_minibatch_size
+            end = start + actual_minibatch_size
+            minibatch = tuple(x[start:end] for x in shuffled)
+            student_network, opt_state, loss, metrics = train_soft_minibatch(
+                student_network,
+                base_network,
+                opt_state,
+                minibatch,
+                optimizer,
+                kl_weight,
+                improve_weight,
+                temperature,
+            )
+            epoch_loss += loss
+            if epoch_metrics is None:
+                epoch_metrics = metrics
+            else:
+                epoch_metrics = jax.tree.map(lambda a, b: a + b, epoch_metrics, metrics)
+
+        avg_loss = epoch_loss / num_complete_batches
+        avg_metrics = jax.tree.map(lambda x: x / num_complete_batches, epoch_metrics)
+
+    avg_metrics = dict(avg_metrics)
+    avg_metrics["selected_samples"] = jnp.sum((search_weights > 0.0).astype(jnp.float32))
+    avg_metrics["mean_selected_margin"] = 0.0
+    return student_network, opt_state, avg_loss, avg_metrics, key
+
+
 @eqx.filter_jit
 def collect_conservative_batch(
     student_network,
@@ -233,6 +445,7 @@ def collect_conservative_batch(
     policy_mode,
     opponent_policy_mode,
     learner_player,
+    policy_input,
     top_k,
     rollout_steps,
     rollouts_per_action,
@@ -255,8 +468,13 @@ def collect_conservative_batch(
         obs_p1 = jax.vmap(lambda state: game.get_observation(state, 1))(states)
         learner_obs = jax.lax.cond(learner_player == 0, lambda _: obs_p0, lambda _: obs_p1, None)
         opponent_obs = jax.lax.cond(learner_player == 0, lambda _: obs_p1, lambda _: obs_p0, None)
-        learner_obs_arr = jax.vmap(obs_to_array)(learner_obs)
-        masks = jax.vmap(lambda obs: compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains))(learner_obs)
+        learner_obs_arr, masks = jax.vmap(
+            lambda state, obs: policy_input_array_and_mask(state, obs, learner_player, policy_input)
+        )(states, learner_obs)
+        base_obs_arr = jax.vmap(obs_to_array)(learner_obs)
+        base_masks = jax.vmap(lambda obs: compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains))(
+            learner_obs
+        )
 
         key, search_key, learner_key, opponent_key = jrandom.split(key, 4)
         search_keys = jrandom.split(search_key, num_envs)
@@ -287,7 +505,18 @@ def collect_conservative_batch(
 
         learner_keys = jrandom.split(learner_key, num_envs)
         opponent_keys = jrandom.split(opponent_key, num_envs)
-        learner_actions = jax.vmap(lambda sample_key, obs: policy_network_action(student_network, sample_key, obs, policy_mode))(
+        learner_actions = jax.vmap(
+            lambda state, sample_key, obs: policy_state_action(
+                student_network,
+                sample_key,
+                state,
+                obs,
+                learner_player,
+                policy_mode,
+                policy_input,
+            )
+        )(
+            states,
             learner_keys,
             learner_obs,
         )
@@ -304,10 +533,114 @@ def collect_conservative_batch(
         return (final_states, key), (
             learner_obs_arr,
             masks,
+            base_obs_arr,
+            base_masks,
             target_indices,
             improve_weights,
             active_weights,
             margins,
+        )
+
+    (states, key), batch = jax.lax.scan(body, (states, key), None, length=num_steps)
+    return states, batch, key
+
+
+@eqx.filter_jit
+def collect_soft_batch(
+    student_network,
+    base_network,
+    opponent_network,
+    states,
+    key,
+    num_steps,
+    policy_mode,
+    opponent_policy_mode,
+    learner_player,
+    policy_input,
+    top_k,
+    rollout_steps,
+    rollouts_per_action,
+    army_weight,
+    land_weight,
+    prior_weight,
+    score_temperature,
+):
+    """Collect student-distribution states labeled by soft search-score targets."""
+    num_envs = states.armies.shape[0]
+
+    def body(carry, _):
+        states, key = carry
+        prior_info = jax.vmap(game.get_info)(states)
+        active = ~prior_info.is_done
+
+        obs_p0 = jax.vmap(lambda state: game.get_observation(state, 0))(states)
+        obs_p1 = jax.vmap(lambda state: game.get_observation(state, 1))(states)
+        learner_obs = jax.lax.cond(learner_player == 0, lambda _: obs_p0, lambda _: obs_p1, None)
+        opponent_obs = jax.lax.cond(learner_player == 0, lambda _: obs_p1, lambda _: obs_p0, None)
+        learner_obs_arr, masks = jax.vmap(
+            lambda state, obs: policy_input_array_and_mask(state, obs, learner_player, policy_input)
+        )(states, learner_obs)
+        base_obs_arr = jax.vmap(obs_to_array)(learner_obs)
+        base_masks = jax.vmap(lambda obs: compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains))(
+            learner_obs
+        )
+
+        key, search_key, learner_key, opponent_key = jrandom.split(key, 4)
+        search_keys = jrandom.split(search_key, num_envs)
+        _, candidate_indices, _, search_scores = jax.vmap(
+            lambda state, sample_key: rollout_search_candidates(
+                base_network,
+                state,
+                sample_key,
+                learner_player,
+                top_k,
+                rollout_steps,
+                rollouts_per_action,
+                opponent_policy_mode,
+                army_weight,
+                land_weight,
+                prior_weight,
+            )
+        )(states, search_keys)
+        target_probs = search_score_target_probs(search_scores, score_temperature)
+        active_weights = active.astype(jnp.float32)
+
+        learner_keys = jrandom.split(learner_key, num_envs)
+        opponent_keys = jrandom.split(opponent_key, num_envs)
+        learner_actions = jax.vmap(
+            lambda state, sample_key, obs: policy_state_action(
+                student_network,
+                sample_key,
+                state,
+                obs,
+                learner_player,
+                policy_mode,
+                policy_input,
+            )
+        )(
+            states,
+            learner_keys,
+            learner_obs,
+        )
+        opponent_actions = jax.vmap(
+            lambda sample_key, obs: policy_network_action(opponent_network, sample_key, obs, opponent_policy_mode)
+        )(opponent_keys, opponent_obs)
+        actions = stack_learner_actions(learner_actions, opponent_actions, learner_player)
+        next_states, _ = jax.vmap(game.step)(states, actions)
+        final_states = jax.tree.map(
+            lambda old, new: jnp.where(active.reshape(num_envs, *([1] * (old.ndim - 1))), new, old),
+            states,
+            next_states,
+        )
+        return (final_states, key), (
+            learner_obs_arr,
+            masks,
+            base_obs_arr,
+            base_masks,
+            candidate_indices,
+            target_probs,
+            active_weights,
+            active_weights,
         )
 
     (states, key), batch = jax.lax.scan(body, (states, key), None, length=num_steps)
@@ -326,6 +659,8 @@ def parse_args():
     parser.add_argument("--policy-mode", choices=POLICY_MODE_NAMES, default="sample")
     parser.add_argument("--opponent-policy-mode", choices=POLICY_MODE_NAMES, default="sample")
     parser.add_argument("--learner-player", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--policy-input", choices=POLICY_INPUT_NAMES, default="observation")
+    parser.add_argument("--target-mode", choices=TARGET_MODE_NAMES, default="hard")
     parser.add_argument("--channels", default=None, help="Student channels, for example 64,64,64,32.")
     parser.add_argument("--base-channels", default=None, help="Base/search checkpoint channels.")
     parser.add_argument("--opponent-channels", default=None, help="Opponent checkpoint channels. Defaults to base channels.")
@@ -337,6 +672,7 @@ def parse_args():
     parser.add_argument("--kl-weight", type=float, default=1.0)
     parser.add_argument("--improve-weight", type=float, default=0.05)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--score-temperature", type=float, default=1.0)
     parser.add_argument("--min-margin", type=float, default=25.0)
     parser.add_argument("--margin-scale", type=float, default=100.0)
     parser.add_argument("--max-improve-weight", type=float, default=1.0)
@@ -375,6 +711,8 @@ def parse_args():
         parser.error("--kl-weight and --improve-weight must be non-negative")
     if args.temperature <= 0.0:
         parser.error("--temperature must be positive")
+    if args.score_temperature <= 0.0:
+        parser.error("--score-temperature must be positive")
     if args.margin_scale <= 0.0:
         parser.error("--margin-scale must be positive")
     if args.max_improve_weight <= 0.0:
@@ -410,10 +748,11 @@ def main():
     opponent_policy_path = args.opponent_policy_path or args.base_model_path
     policy_mode = POLICY_MODE_NAME_TO_ID[args.policy_mode]
     opponent_policy_mode = POLICY_MODE_NAME_TO_ID[args.opponent_policy_mode]
+    policy_input = POLICY_INPUT_NAME_TO_ID[args.policy_input]
 
     print("Conservative rollout-search distillation")
     print(f"Device:        {jax.devices()[0]}")
-    print(f"Student:       {init_model_path} channels={args.channels}")
+    print(f"Student:       {init_model_path} channels={args.channels} input={args.policy_input}")
     print(f"Base/Search:   {args.base_model_path} channels={args.base_channels}")
     print(f"Opponent:      {opponent_policy_path} channels={args.opponent_channels} ({args.opponent_policy_mode})")
     print(f"Grid:          {args.grid_size}x{args.grid_size} ({args.map_generator})")
@@ -425,7 +764,8 @@ def main():
     print(
         "Objective:     "
         f"kl={args.kl_weight:g}, improve={args.improve_weight:g}, "
-        f"min_margin={args.min_margin:g}, margin_scale={args.margin_scale:g}"
+        f"mode={args.target_mode}, min_margin={args.min_margin:g}, "
+        f"margin_scale={args.margin_scale:g}, score_temp={args.score_temperature:g}"
     )
     print()
 
@@ -467,40 +807,76 @@ def main():
             (args.city_army_min, args.city_army_max),
         )
         states = jax.vmap(game.create_initial_state)(grids)
-        _, batch, rollout_key = collect_conservative_batch(
-            student_network,
-            base_network,
-            opponent_network,
-            states,
-            rollout_key,
-            args.num_steps,
-            policy_mode,
-            opponent_policy_mode,
-            args.learner_player,
-            args.top_k,
-            args.rollout_steps,
-            args.rollouts_per_action,
-            args.army_weight,
-            args.land_weight,
-            args.prior_weight,
-            args.min_margin,
-            args.margin_scale,
-            args.max_improve_weight,
-        )
-        flat_batch = flatten_conservative_batch(*batch)
-        student_network, opt_state, loss, metrics, update_key = train_conservative_epoch(
-            student_network,
-            base_network,
-            opt_state,
-            flat_batch,
-            optimizer,
-            update_key,
-            args.num_epochs,
-            args.minibatch_size,
-            args.kl_weight,
-            args.improve_weight,
-            args.temperature,
-        )
+        if args.target_mode == "hard":
+            _, batch, rollout_key = collect_conservative_batch(
+                student_network,
+                base_network,
+                opponent_network,
+                states,
+                rollout_key,
+                args.num_steps,
+                policy_mode,
+                opponent_policy_mode,
+                args.learner_player,
+                policy_input,
+                args.top_k,
+                args.rollout_steps,
+                args.rollouts_per_action,
+                args.army_weight,
+                args.land_weight,
+                args.prior_weight,
+                args.min_margin,
+                args.margin_scale,
+                args.max_improve_weight,
+            )
+            flat_batch = flatten_conservative_batch(*batch)
+            student_network, opt_state, loss, metrics, update_key = train_conservative_epoch(
+                student_network,
+                base_network,
+                opt_state,
+                flat_batch,
+                optimizer,
+                update_key,
+                args.num_epochs,
+                args.minibatch_size,
+                args.kl_weight,
+                args.improve_weight,
+                args.temperature,
+            )
+        else:
+            _, batch, rollout_key = collect_soft_batch(
+                student_network,
+                base_network,
+                opponent_network,
+                states,
+                rollout_key,
+                args.num_steps,
+                policy_mode,
+                opponent_policy_mode,
+                args.learner_player,
+                policy_input,
+                args.top_k,
+                args.rollout_steps,
+                args.rollouts_per_action,
+                args.army_weight,
+                args.land_weight,
+                args.prior_weight,
+                args.score_temperature,
+            )
+            flat_batch = flatten_soft_batch(*batch)
+            student_network, opt_state, loss, metrics, update_key = train_soft_epoch(
+                student_network,
+                base_network,
+                opt_state,
+                flat_batch,
+                optimizer,
+                update_key,
+                args.num_epochs,
+                args.minibatch_size,
+                args.kl_weight,
+                args.improve_weight,
+                args.temperature,
+            )
         jax.block_until_ready(student_network)
 
         if iteration % 5 == 0 or iteration == args.num_iterations - 1:

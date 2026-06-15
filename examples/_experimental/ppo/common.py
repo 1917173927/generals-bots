@@ -24,6 +24,8 @@ OPPONENT_NAMES = ("random",) + HEURISTIC_NAMES
 OPPONENT_NAME_TO_ID = {name: idx for idx, name in enumerate(OPPONENT_NAMES)}
 POLICY_MODE_NAMES = ("greedy", "sample")
 POLICY_MODE_NAME_TO_ID = {name: idx for idx, name in enumerate(POLICY_MODE_NAMES)}
+POLICY_INPUT_NAMES = ("observation", "full-state")
+POLICY_INPUT_NAME_TO_ID = {name: idx for idx, name in enumerate(POLICY_INPUT_NAMES)}
 
 
 def make_simple_general_grid(key, grid_size):
@@ -107,6 +109,39 @@ def action_to_target_probs(action, grid_size):
     return jax.nn.one_hot(index, 9 * grid_cells, dtype=jnp.float32)
 
 
+def full_state_to_array(state, player):
+    """Encode privileged full-state features using the policy network's 9 channels."""
+    opponent = 1 - player
+    return jnp.stack(
+        [
+            state.armies,
+            state.generals,
+            state.cities,
+            state.mountains,
+            state.ownership_neutral,
+            state.ownership[player],
+            state.ownership[opponent],
+            jnp.zeros_like(state.armies, dtype=bool),
+            state.mountains | state.cities,
+        ],
+        axis=0,
+    ).astype(jnp.float32)
+
+
+def policy_input_array_and_mask(state, obs, player, policy_input):
+    """Return the network input array and valid-action mask for one policy input mode."""
+
+    def observation_input(_):
+        mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
+        return obs_to_array(obs), mask
+
+    def full_state_input(_):
+        mask = compute_valid_move_mask(state.armies, state.ownership[player], state.mountains)
+        return full_state_to_array(state, player), mask
+
+    return jax.lax.cond(policy_input == 0, observation_input, full_state_input, None)
+
+
 def opponent_action(opponent_id, key, obs, random_action_fn):
     """Dispatch a random or heuristic opponent action."""
     return jax.lax.cond(
@@ -125,6 +160,21 @@ def policy_network_action(network, key, obs, policy_mode):
         lambda _: sampled_policy_action(network, obs, key),
         None,
     )
+
+
+def policy_state_action(network, key, state, obs, player, policy_mode, policy_input):
+    """Dispatch a policy action from either fogged observation or privileged full state."""
+    obs_arr, mask = policy_input_array_and_mask(state, obs, player, policy_input)
+    logits, _ = network.logits_value(obs_arr, mask)
+    grid_size = obs.armies.shape[-1]
+
+    index = jax.lax.cond(
+        policy_mode == 0,
+        lambda _: jnp.argmax(logits),
+        lambda _: jrandom.categorical(key, logits),
+        None,
+    )
+    return index_to_action(index, grid_size)
 
 
 def expander_target_probs(obs):

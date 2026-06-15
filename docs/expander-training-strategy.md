@@ -354,7 +354,9 @@ rollout-search as player 1 vs v5 sample, seed 19193:
 - 学生从 `--init-model-path` warm start；省略时默认从 base checkpoint 开始。
 - 每个学生状态只对 base policy top-k 候选动作做短 rollout 评分。
 - 只有当 search 最优动作不是 base 的 top-prior 动作，且分数差超过 `--min-margin` 时，才加入动作监督。
-- 总 loss 为 `kl_weight * KL(base || student) + improve_weight * weighted CE(search_action)`。
+- `--target-mode hard` 的总 loss 为 `kl_weight * KL(base || student) + improve_weight * weighted CE(search_action)`。
+- `--target-mode soft` 会把 top-k search 分数转为候选动作上的软目标，避免把大量小 margin 候选强制压成单标签。
+- `--policy-input full-state` 会让学生使用 privileged 完整状态编码；此模式不等同于标准 fogged observation policy，评估时也必须传 `evaluate_policy.py --policy-input full-state`。
 
 基础命令：
 
@@ -362,6 +364,7 @@ rollout-search as player 1 vs v5 sample, seed 19193:
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
 uv run python examples/_experimental/ppo/conservative_search_distill.py 128 \
   --base-model-path /tmp/generals-ppo-8x8-expander-gpu-v5.eqx \
+  --target-mode soft \
   --num-steps 64 \
   --num-iterations 80 \
   --minibatch-size 8192 \
@@ -399,6 +402,54 @@ player 1, seed 23131:
 ```
 
 因此，保守蒸馏能力已经可复用，但当前结果仍只是“接近保持 v5”，没有把 rollout-search 的 80%+ 胜率压缩进纯 `.eqx` checkpoint。下一步更有希望的方向是训练显式 Q/value-improvement head、在网络输入中加入 rollout/search 特征，或把 search 保留为评测/实战时的规划模块，而不是继续只做动作分类蒸馏。
+
+#### soft target 与 full-state 探测
+
+对 16,337 个 active 样本的 top-k search 分数做探测时，search 最优动作有 60.8% 不等于 base top-prior 动作，但大多数 margin 很小：
+
+```text
+margin vs base, all samples:
+  p50 = 0.048
+  p75 = 0.201
+  p95 = 1.004
+  p99 = 254.649
+
+switched action fraction = 60.8%
+```
+
+这解释了为什么硬 argmax 蒸馏容易退化：大量标签来自近似并列候选，单标签 CE 会放大 rollout 噪声。soft target 蒸馏避免了这个问题，但默认 observation 输入仍没有产生显著提升：
+
+```text
+/tmp/generals-ppo-8x8-soft-search-v1.eqx, player 0, seed 24120:
+  candidate wins/losses/draws = 478/458/88
+  same-seed v5 baseline       = 475/450/99
+
+player 1, seed 24121:
+  candidate wins/losses/draws = 465/452/107
+  same-seed v5 baseline       = 479/445/100
+```
+
+进一步检查发现，`search_policy.py` 的 rollout 评分推进完整 `GameState`，而普通 policy checkpoint 只接收 fogged `Observation`。直接把 v5 checkpoint 接到替换式 full-state 9 通道编码上会更弱：
+
+```text
+full-state v5 wrapper vs v5 sample, player 0:
+  wins/losses/draws = 418/512/94
+  win rate = 40.82%
+```
+
+修正 KL 后的 full-state soft-search 训练仍未提升：
+
+```text
+/tmp/generals-ppo-8x8-fullstate-soft-search-v2.eqx, player 0, seed 24430:
+  candidate wins/losses/draws = 392/542/90
+  same-seed v5 baseline       = 485/440/99
+
+player 1, seed 24431:
+  candidate wins/losses/draws = 410/528/86
+  same-seed v5 baseline       = 482/446/96
+```
+
+当前结论：不能简单把原 9 个 observation 通道替换成 full-state 语义。下一步如果继续 privileged checkpoint 路线，应扩展输入通道，并把 v5 原始 9 通道 conv1 权重原样复制，额外 full-state/search 特征通道从 0 初始化，这样才能保留 v5 基线行为再学习隐藏信息增益。
 
 ### 容量扩展实验
 

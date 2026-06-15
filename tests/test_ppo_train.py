@@ -1,9 +1,10 @@
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 
 from examples._experimental.ppo.common import policy_network_action
-from examples._experimental.ppo.evaluate_policy import summarize_policy_results
+from examples._experimental.ppo.evaluate_policy import evaluate_policy_opponent_batch, summarize_policy_results
 from examples._experimental.ppo.train import apply_terminal_reward, load_or_create_network, stack_learner_actions
 from generals.agents.ppo_policy_agent import PolicyValueNetwork, greedy_policy_action
 from generals.core import game
@@ -128,3 +129,23 @@ def test_stack_learner_actions_places_actions_in_selected_player_slot():
     assert jnp.array_equal(as_player0[:, 1], opponent_actions)
     assert jnp.array_equal(as_player1[:, 0], opponent_actions)
     assert jnp.array_equal(as_player1[:, 1], learner_actions)
+
+
+def test_evaluate_policy_opponent_batch_supports_full_state_policy_input():
+    network = PolicyValueNetwork(jrandom.PRNGKey(0), grid_size=4)
+    grid = jnp.zeros((4, 4), dtype=jnp.int32).at[0, 0].set(1).at[3, 3].set(2)
+    states = jax.tree.map(lambda x: jnp.stack([x, x]), game.create_initial_state(grid))
+
+    info = evaluate_policy_opponent_batch(
+        network,
+        network,
+        states,
+        jrandom.PRNGKey(1),
+        max_steps=1,
+        policy_mode=1,
+        policy_player=0,
+        opponent_policy_mode=1,
+        policy_input=1,
+    )
+
+    assert info.winner.shape == (2,)

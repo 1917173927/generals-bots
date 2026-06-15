@@ -261,6 +261,7 @@ uv run python examples/_experimental/ppo/search_policy.py /tmp/generals-ppo-8x8-
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
 uv run python examples/_experimental/ppo/conservative_search_distill.py 128 \
   --base-model-path /tmp/generals-ppo-8x8-expander-gpu-v5.eqx \
+  --target-mode soft \
   --num-steps 64 \
   --num-iterations 80 \
   --min-margin 1 \
@@ -271,7 +272,7 @@ uv run python examples/_experimental/ppo/conservative_search_distill.py 128 \
   --model-path /tmp/generals-ppo-8x8-conservative-search.eqx
 ```
 
-该脚本用固定 base checkpoint 做 rollout-search teacher，并用 KL 约束学生贴近 base。只有当 search 最优动作明显优于 base 的 top-prior 动作时，才加入小权重动作监督。它适合继续研究 search distillation，不应把训练 loss 当成棋力指标；仍需用 `evaluate_policy.py --opponent-policy-path` 独立评估。
+该脚本用固定 base checkpoint 做 rollout-search teacher，并用 KL 约束学生贴近 base。`--target-mode hard` 只在 search 最优动作明显优于 base top-prior 动作时加入小权重动作监督；`--target-mode soft` 会把 top-k rollout 分数转成软目标，避免把近似并列候选强行压成单标签。`--policy-input full-state` 可让学生接收 privileged 完整状态编码，评估时也要给 `evaluate_policy.py` 传同名参数。它适合继续研究 search distillation，不应把训练 loss 当成棋力指标；仍需用 `evaluate_policy.py --opponent-policy-path` 独立评估。
 
 行为克隆 warm start：
 

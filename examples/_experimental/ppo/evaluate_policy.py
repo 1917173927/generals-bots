@@ -21,12 +21,13 @@ from generals.core import game
 from common import (
     OPPONENT_NAME_TO_ID,
     OPPONENT_NAMES,
+    POLICY_INPUT_NAME_TO_ID,
+    POLICY_INPUT_NAMES,
     POLICY_MODE_NAMES,
-    greedy_policy_action,
     make_grids,
     opponent_action,
     policy_network_action,
-    sampled_policy_action,
+    policy_state_action,
 )
 from network import PolicyValueNetwork
 from train import random_action
@@ -34,7 +35,7 @@ from generals.agents.ppo_policy_agent import parse_policy_channels
 
 
 @eqx.filter_jit
-def evaluate_batch(network, states, key, max_steps, opponent, policy_mode, policy_player):
+def evaluate_batch(network, states, key, max_steps, opponent, policy_mode, policy_player, policy_input):
     """Evaluate a network against Random or a heuristic on a batch of states."""
     num_envs = states.armies.shape[0]
 
@@ -47,12 +48,17 @@ def evaluate_batch(network, states, key, max_steps, opponent, policy_mode, polic
 
         key, k0, k1 = jrandom.split(key, 3)
         policy_keys = jrandom.split(k0, num_envs)
-        actions_p0 = jax.lax.cond(
-            policy_mode == 0,
-            lambda _: jax.vmap(lambda o: greedy_policy_action(network, o))(policy_obs),
-            lambda _: jax.vmap(lambda o, k: sampled_policy_action(network, o, k))(policy_obs, policy_keys),
-            None,
-        )
+        actions_p0 = jax.vmap(
+            lambda state, action_key, obs: policy_state_action(
+                network,
+                action_key,
+                state,
+                obs,
+                policy_player,
+                policy_mode,
+                policy_input,
+            )
+        )(states, policy_keys, policy_obs)
         opponent_keys = jrandom.split(k1, num_envs)
         actions_p1 = jax.vmap(lambda k, o: opponent_action(opponent, k, o, random_action))(opponent_keys, opponent_obs)
         actions = jax.lax.cond(
@@ -82,6 +88,7 @@ def evaluate_policy_opponent_batch(
     policy_mode,
     policy_player,
     opponent_policy_mode,
+    policy_input,
 ):
     """Evaluate a network against a frozen PPO checkpoint opponent."""
     num_envs = states.armies.shape[0]
@@ -96,9 +103,17 @@ def evaluate_policy_opponent_batch(
         key, k0, k1 = jrandom.split(key, 3)
         policy_keys = jrandom.split(k0, num_envs)
         opponent_keys = jrandom.split(k1, num_envs)
-        policy_actions = jax.vmap(lambda k, o: policy_network_action(network, k, o, policy_mode))(
-            policy_keys, policy_obs
-        )
+        policy_actions = jax.vmap(
+            lambda state, action_key, obs: policy_state_action(
+                network,
+                action_key,
+                state,
+                obs,
+                policy_player,
+                policy_mode,
+                policy_input,
+            )
+        )(states, policy_keys, policy_obs)
         opponent_actions = jax.vmap(
             lambda k, o: policy_network_action(opponent_network, k, o, opponent_policy_mode)
         )(opponent_keys, opponent_obs)
@@ -149,6 +164,7 @@ def parse_args():
     parser.add_argument("--map-generator", choices=("simple", "generated"), default="generated")
     parser.add_argument("--opponent", choices=OPPONENT_NAMES, default="random")
     parser.add_argument("--policy-mode", choices=("greedy", "sample"), default="greedy")
+    parser.add_argument("--policy-input", choices=POLICY_INPUT_NAMES, default="observation")
     parser.add_argument("--opponent-policy-path", default=None)
     parser.add_argument("--opponent-policy-mode", choices=POLICY_MODE_NAMES, default="sample")
     parser.add_argument(
@@ -220,10 +236,20 @@ def main():
 
     opponent_code = OPPONENT_NAME_TO_ID[args.opponent]
     policy_mode = 0 if args.policy_mode == "greedy" else 1
+    policy_input = POLICY_INPUT_NAME_TO_ID[args.policy_input]
     opponent_policy_mode = 0 if args.opponent_policy_mode == "greedy" else 1
     t0 = time.time()
     if opponent_network is None:
-        info = evaluate_batch(network, states, eval_key, args.max_steps, opponent_code, policy_mode, args.policy_player)
+        info = evaluate_batch(
+            network,
+            states,
+            eval_key,
+            args.max_steps,
+            opponent_code,
+            policy_mode,
+            args.policy_player,
+            policy_input,
+        )
     else:
         info = evaluate_policy_opponent_batch(
             network,
@@ -234,6 +260,7 @@ def main():
             policy_mode,
             args.policy_player,
             opponent_policy_mode,
+            policy_input,
         )
     jax.block_until_ready(info.winner)
     elapsed = time.time() - t0
@@ -253,6 +280,7 @@ def main():
         print(f"Opponent mode:      {args.opponent_policy_mode}")
         print(f"Opponent channels:  {args.opponent_channels}")
     print(f"Policy mode:        {args.policy_mode}")
+    print(f"Policy input:       {args.policy_input}")
     print(f"Policy player:      {args.policy_player}")
     print(f"Games:              {args.num_games}")
     print(f"Max steps:          {args.max_steps}")

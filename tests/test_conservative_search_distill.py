@@ -3,7 +3,10 @@ import jax.random as jrandom
 
 from examples._experimental.ppo.conservative_search_distill import (
     compute_conservative_loss,
+    compute_soft_conservative_loss,
+    search_score_target_probs,
     select_search_improvements,
+    weighted_topk_cross_entropy,
 )
 from generals.agents.ppo_policy_agent import PolicyValueNetwork
 
@@ -52,6 +55,8 @@ def test_compute_conservative_loss_is_zero_for_matching_networks_without_improve
         network,
         obs,
         masks,
+        obs,
+        masks,
         targets,
         improve_weights,
         kl_weights,
@@ -63,3 +68,55 @@ def test_compute_conservative_loss_is_zero_for_matching_networks_without_improve
     assert abs(float(loss)) < 1e-6
     assert abs(float(metrics["kl_loss"])) < 1e-6
     assert float(metrics["improve_loss"]) == 0.0
+
+
+def test_compute_soft_conservative_loss_accepts_separate_base_inputs():
+    network = PolicyValueNetwork(jrandom.PRNGKey(0), grid_size=4)
+    student_obs = jnp.zeros((2, 9, 4, 4), dtype=jnp.float32)
+    base_obs = jnp.ones((2, 9, 4, 4), dtype=jnp.float32)
+    masks = jnp.ones((2, 4, 4, 4), dtype=bool)
+    candidate_indices = jnp.array([[0, 1], [2, 3]], dtype=jnp.int32)
+    target_probs = jnp.full((2, 2), 0.5, dtype=jnp.float32)
+    search_weights = jnp.zeros((2,), dtype=jnp.float32)
+    kl_weights = jnp.ones((2,), dtype=jnp.float32)
+
+    loss, metrics = compute_soft_conservative_loss(
+        network,
+        network,
+        student_obs,
+        masks,
+        base_obs,
+        masks,
+        candidate_indices,
+        target_probs,
+        search_weights,
+        kl_weights,
+        kl_weight=0.0,
+        improve_weight=0.0,
+        temperature=1.0,
+    )
+
+    assert float(loss) == 0.0
+    assert "kl_loss" in metrics
+
+
+def test_search_score_target_probs_normalizes_topk_scores():
+    scores = jnp.array([[1.0, 3.0, 2.0], [4.0, 4.0, 4.0]], dtype=jnp.float32)
+
+    probs = search_score_target_probs(scores, temperature=1.0)
+
+    assert jnp.allclose(jnp.sum(probs, axis=1), jnp.ones((2,), dtype=jnp.float32))
+    assert int(jnp.argmax(probs[0])) == 1
+    assert jnp.allclose(probs[1], jnp.full((3,), 1 / 3, dtype=jnp.float32))
+
+
+def test_weighted_topk_cross_entropy_uses_candidate_probabilities():
+    log_probs = jnp.log(jnp.array([[0.1, 0.2, 0.7], [0.5, 0.25, 0.25]], dtype=jnp.float32))
+    candidate_indices = jnp.array([[0, 2], [1, 2]], dtype=jnp.int32)
+    target_probs = jnp.array([[0.25, 0.75], [0.6, 0.4]], dtype=jnp.float32)
+    weights = jnp.array([1.0, 0.0], dtype=jnp.float32)
+
+    loss = weighted_topk_cross_entropy(log_probs, candidate_indices, target_probs, weights)
+
+    expected = -(0.25 * jnp.log(0.1) + 0.75 * jnp.log(0.7))
+    assert jnp.allclose(loss, expected)
