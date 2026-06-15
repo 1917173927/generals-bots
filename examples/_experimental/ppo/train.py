@@ -22,7 +22,14 @@ from generals.core import game
 from generals.core.grid import generate_grid
 from generals.core.rewards import composite_reward_fn
 
-from common import OPPONENT_NAME_TO_ID, OPPONENT_NAMES, opponent_action
+from common import (
+    OPPONENT_NAME_TO_ID,
+    OPPONENT_NAMES,
+    POLICY_MODE_NAME_TO_ID,
+    POLICY_MODE_NAMES,
+    opponent_action,
+    policy_network_action,
+)
 from network import PolicyValueNetwork, obs_to_array
 
 
@@ -163,6 +170,53 @@ def rollout_step(states, pool, network, key, truncation, opponent_id):
         current_states,
     )
     
+    return final_states, (obs_arr, masks, actions_p0, logprobs, values, rewards, dones, infos), key
+
+
+@eqx.filter_jit
+def rollout_step_policy_opponent(states, pool, network, opponent_network, key, truncation, opponent_policy_mode):
+    """Vectorized rollout step against a frozen policy checkpoint opponent."""
+    num_envs = states.armies.shape[0]
+
+    obs_p0_prior = jax.vmap(lambda s: game.get_observation(s, 0))(states)
+    obs_p1_prior = jax.vmap(lambda s: game.get_observation(s, 1))(states)
+
+    obs_arr = jax.vmap(obs_to_array)(obs_p0_prior)
+    masks = jax.vmap(lambda o: compute_valid_move_mask(o.armies, o.owned_cells, o.mountains))(obs_p0_prior)
+
+    key, *keys = jrandom.split(key, num_envs + 1)
+    actions_p0, values, logprobs, entropies = jax.vmap(network, in_axes=(0, 0, 0, None))(
+        obs_arr, masks, jnp.stack(keys), None
+    )
+
+    key, *keys = jrandom.split(key, num_envs + 1)
+    actions_p1 = jax.vmap(lambda k, o: policy_network_action(opponent_network, k, o, opponent_policy_mode))(
+        jnp.stack(keys), obs_p1_prior
+    )
+
+    actions = jnp.stack([actions_p0, actions_p1], axis=1)
+    new_states, infos = jax.vmap(game.step)(states, actions)
+
+    obs_p0_new = jax.vmap(lambda s: game.get_observation(s, 0))(new_states)
+    rewards = jax.vmap(composite_reward_fn)(obs_p0_prior, actions_p0, obs_p0_new)
+
+    terminated = infos.is_done
+    truncated = (new_states.time >= truncation) & ~terminated
+    dones = terminated | truncated
+
+    pool_size = pool.armies.shape[0]
+    reset_indices = new_states.pool_idx % pool_size
+    reset_states = jax.tree.map(lambda x: x[reset_indices], pool)
+    next_pool_idx = jnp.where(dones, new_states.pool_idx + num_envs, new_states.pool_idx)
+    reset_states = reset_states._replace(pool_idx=next_pool_idx)
+    current_states = new_states._replace(pool_idx=next_pool_idx)
+
+    final_states = jax.tree.map(
+        lambda reset, current: jnp.where(dones.reshape(num_envs, *([1] * (reset.ndim - 1))), reset, current),
+        reset_states,
+        current_states,
+    )
+
     return final_states, (obs_arr, masks, actions_p0, logprobs, values, rewards, dones, infos), key
 
 
@@ -310,6 +364,17 @@ def main():
     parser.add_argument("--grid-size", type=int, default=4, help="Square map size used by the policy network.")
     parser.add_argument("--truncation", type=int, default=500, help="Maximum game steps before an auto-reset.")
     parser.add_argument("--opponent", choices=OPPONENT_NAMES, default="random", help="Player-1 training opponent.")
+    parser.add_argument(
+        "--opponent-policy-path",
+        default=None,
+        help="Optional frozen PPO checkpoint to use as the player-1 opponent instead of --opponent.",
+    )
+    parser.add_argument(
+        "--opponent-policy-mode",
+        choices=POLICY_MODE_NAMES,
+        default="sample",
+        help="Execution mode for --opponent-policy-path.",
+    )
     parser.add_argument("--pool-size", type=int, default=2048, help="Number of pre-generated reset states.")
     parser.add_argument(
         "--map-generator",
@@ -367,7 +432,11 @@ def main():
     print("JAX PPO (Raw Game API - Max Performance)")
     print(f"Environments:  {num_envs}")
     print(f"Device:        {jax.devices()[0]}")
-    print(f"Opponent:      {args.opponent}")
+    if args.opponent_policy_path is None:
+        print(f"Opponent:      {args.opponent}")
+    else:
+        print(f"Opponent:      policy checkpoint ({args.opponent_policy_mode})")
+        print(f"Opponent path: {args.opponent_policy_path}")
     print(f"Grid:          {grid_size}x{grid_size} ({args.map_generator}, truncation={args.truncation})")
     if args.map_generator == "generated":
         print(f"Mountains:     {args.mountain_density_min:.2f}-{args.mountain_density_max:.2f}")
@@ -381,12 +450,20 @@ def main():
     
     # Initialize
     key = jrandom.PRNGKey(args.seed)
-    key, net_key = jrandom.split(key)
+    key, net_key, opponent_net_key = jrandom.split(key, 3)
     network = load_or_create_network(net_key, grid_size=grid_size, init_model_path=args.init_model_path)
+    opponent_network = None
+    if args.opponent_policy_path is not None:
+        opponent_network = load_or_create_network(
+            opponent_net_key,
+            grid_size=grid_size,
+            init_model_path=args.opponent_policy_path,
+        )
     optimizer = optax.adam(lr)
     params = eqx.filter(network, eqx.is_inexact_array)
     opt_state = optimizer.init(params)
     opponent_id = OPPONENT_NAME_TO_ID[args.opponent]
+    opponent_policy_mode = POLICY_MODE_NAME_TO_ID[args.opponent_policy_mode]
 
     print(f"Parameters: {sum(x.size for x in jax.tree.leaves(params)):,}")
     
@@ -407,7 +484,18 @@ def main():
     
     print("\nWarming up...")
     for _ in range(3):
-        states, _, key = rollout_step(states, pool, network, key, args.truncation, opponent_id)
+        if opponent_network is None:
+            states, _, key = rollout_step(states, pool, network, key, args.truncation, opponent_id)
+        else:
+            states, _, key = rollout_step_policy_opponent(
+                states,
+                pool,
+                network,
+                opponent_network,
+                key,
+                args.truncation,
+                opponent_policy_mode,
+            )
     jax.block_until_ready(states)
     
     print("Training...\n")
@@ -418,7 +506,18 @@ def main():
         # Collect rollout
         rollout_data = []
         for _ in range(num_steps):
-            states, data, key = rollout_step(states, pool, network, key, args.truncation, opponent_id)
+            if opponent_network is None:
+                states, data, key = rollout_step(states, pool, network, key, args.truncation, opponent_id)
+            else:
+                states, data, key = rollout_step_policy_opponent(
+                    states,
+                    pool,
+                    network,
+                    opponent_network,
+                    key,
+                    args.truncation,
+                    opponent_policy_mode,
+                )
             rollout_data.append(data)
         jax.block_until_ready(states)
         

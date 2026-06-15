@@ -421,7 +421,35 @@ uv run python examples/_experimental/ppo/behavior_clone.py 128 \
 
 输出模型默认建议放在 `/tmp` 或其他实验目录，不要直接提交 `.eqx` checkpoint。
 
-### 7.6 批量评估 checkpoint
+### 7.6 冻结 checkpoint 自博弈
+
+`train.py` 支持用另一个 PPO checkpoint 作为冻结 opponent。训练中的 learner 仍然是 player 0，player 1 由 `--opponent-policy-path` 指定的模型出动作：
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/train.py 512 \
+  --grid-size 8 \
+  --map-generator generated \
+  --mountain-density-min 0.12 \
+  --mountain-density-max 0.22 \
+  --num-cities-min 4 \
+  --num-cities-max 8 \
+  --min-generals-distance 5 \
+  --pool-size 16384 \
+  --num-steps 64 \
+  --num-iterations 300 \
+  --num-epochs 4 \
+  --minibatch-size 4096 \
+  --lr 0.000005 \
+  --init-model-path /tmp/generals-ppo-current.eqx \
+  --opponent-policy-path /tmp/generals-ppo-best-frozen.eqx \
+  --opponent-policy-mode sample \
+  --model-path /tmp/generals-ppo-selfplay-next.eqx
+```
+
+这是 frozen self-play，不是 current-vs-current 同步更新。冻结 opponent 更稳定，适合作为后续 checkpoint league 的基础。
+
+### 7.7 批量评估 checkpoint
 
 评估行为克隆或 PPO checkpoint：
 
@@ -447,7 +475,22 @@ uv run python examples/_experimental/ppo/evaluate_policy.py /tmp/generals-bc-8x8
 
 实验结论应优先基于多 seed、多批次评估，而不是单次训练日志。
 
-### 7.7 可视化训练好的策略
+评估两个 PPO checkpoint 对战时：
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/evaluate_policy.py /tmp/generals-ppo-candidate.eqx \
+  --opponent-policy-path /tmp/generals-ppo-best-frozen.eqx \
+  --opponent-policy-mode sample \
+  --num-games 2048 \
+  --grid-size 8 \
+  --map-generator generated \
+  --max-steps 500 \
+  --policy-mode sample \
+  --policy-player 0
+```
+
+### 7.8 可视化训练好的策略
 
 可视化 `.eqx` 模型：
 
@@ -464,7 +507,7 @@ uv run python examples/_experimental/visualize_policy.py /tmp/generals-ppo-8x8-g
 
 可视化时应保持 `--grid-size` 和地图生成参数与训练 checkpoint 兼容，否则网络尺寸或输入分布可能不匹配。
 
-### 7.8 玩家对战训练好的策略
+### 7.9 玩家对战训练好的策略
 
 可以用本地 pygame 窗口和 `.eqx` PPO checkpoint 对战：
 

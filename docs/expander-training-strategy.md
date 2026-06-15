@@ -165,6 +165,41 @@ uv run python examples/_experimental/ppo/train.py 512 \
 
 如果 rollout 胜率长期停在 85-89%，继续堆同一 PPO 配方收益会降低，应考虑调整奖励、对手课程或引入更强 teacher。
 
+## 阶段四：冻结 checkpoint 自博弈
+
+当前训练入口支持 frozen self-play：learner 从 `--init-model-path` 加载并继续更新，player 1 由 `--opponent-policy-path` 指定的冻结 checkpoint 控制。
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/train.py 512 \
+  --grid-size 8 \
+  --map-generator generated \
+  --mountain-density-min 0.12 \
+  --mountain-density-max 0.22 \
+  --num-cities-min 4 \
+  --num-cities-max 8 \
+  --min-generals-distance 5 \
+  --pool-size 16384 \
+  --num-steps 64 \
+  --num-iterations 300 \
+  --num-epochs 4 \
+  --minibatch-size 4096 \
+  --lr 0.000005 \
+  --truncation 500 \
+  --init-model-path /tmp/generals-ppo-current.eqx \
+  --opponent-policy-path /tmp/generals-ppo-best-frozen.eqx \
+  --opponent-policy-mode sample \
+  --model-path /tmp/generals-ppo-selfplay-next.eqx \
+  --seed 9201
+```
+
+使用建议：
+
+- 不要一开始做 current-vs-current 同步更新；当前 PPO rollout 和 reward 仍按 learner/player 0 组织。
+- 每次 self-play 后都要重新测 Expander、其它 heuristic、历史 best checkpoint 和镜像座位。
+- 如果新模型打赢历史模型但对 Expander 或 mixed heuristic 退化，不应替换 best checkpoint。
+- 后续可以把多个历史 checkpoint 做成 league opponent，但第一步应先保持单个 frozen opponent，确认训练稳定。
+
 ## 评估命令
 
 评估 player 0：
@@ -223,6 +258,22 @@ seed 8503, policy_player=1:
 seed 8504, policy_player=0:
   wins/losses/draws = 2039/2/7
   win rate = 99.56%
+```
+
+评估 candidate checkpoint 对 frozen checkpoint：
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/evaluate_policy.py /tmp/generals-ppo-selfplay-next.eqx \
+  --opponent-policy-path /tmp/generals-ppo-best-frozen.eqx \
+  --opponent-policy-mode sample \
+  --num-games 2048 \
+  --grid-size 8 \
+  --map-generator generated \
+  --max-steps 500 \
+  --policy-mode sample \
+  --policy-player 0 \
+  --seed 8601
 ```
 
 ## 策略层面的经验

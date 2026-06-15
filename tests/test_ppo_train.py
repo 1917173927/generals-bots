@@ -2,10 +2,12 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jrandom
 
+from examples._experimental.ppo.common import policy_network_action
 from examples._experimental.ppo.evaluate_policy import summarize_policy_results
 from examples._experimental.ppo.train import load_or_create_network
+from generals.agents.ppo_policy_agent import PolicyValueNetwork, greedy_policy_action
+from generals.core import game
 from generals.core.game import GameInfo
-from generals.agents.ppo_policy_agent import PolicyValueNetwork
 
 
 def test_load_or_create_network_restores_checkpoint(tmp_path):
@@ -50,3 +52,29 @@ def test_summarize_policy_results_counts_wins_for_selected_player():
     assert summary["losses"] == 1
     assert summary["draws"] == 1
     assert summary["win_rate"] == 0.5
+
+
+def test_policy_network_action_dispatches_greedy_mode():
+    network = PolicyValueNetwork(jrandom.PRNGKey(0), grid_size=4)
+    grid = jnp.zeros((4, 4), dtype=jnp.int32).at[0, 0].set(1).at[3, 3].set(2)
+    state = game.create_initial_state(grid)
+    state = state._replace(armies=state.armies.at[0, 0].set(6))
+    obs = game.get_observation(state, 0)
+
+    action = policy_network_action(network, jrandom.PRNGKey(1), obs, 0)
+
+    assert jnp.array_equal(action, greedy_policy_action(network, obs))
+
+
+def test_policy_network_action_dispatches_sample_mode():
+    network = PolicyValueNetwork(jrandom.PRNGKey(0), grid_size=4)
+    grid = jnp.zeros((4, 4), dtype=jnp.int32).at[0, 0].set(1).at[3, 3].set(2)
+    state = game.create_initial_state(grid)
+    state = state._replace(armies=state.armies.at[0, 0].set(6))
+    obs = game.get_observation(state, 0)
+
+    action = policy_network_action(network, jrandom.PRNGKey(1), obs, 1)
+
+    assert action.shape == (5,)
+    assert action.dtype == jnp.int32
+    assert int(action[0]) in (0, 1)

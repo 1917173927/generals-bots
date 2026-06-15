@@ -22,6 +22,8 @@ TEACHER_NAMES = ("expander-soft",) + HEURISTIC_NAMES
 TEACHER_NAME_TO_ID = {name: idx for idx, name in enumerate(TEACHER_NAMES)}
 OPPONENT_NAMES = ("random",) + HEURISTIC_NAMES
 OPPONENT_NAME_TO_ID = {name: idx for idx, name in enumerate(OPPONENT_NAMES)}
+POLICY_MODE_NAMES = ("greedy", "sample")
+POLICY_MODE_NAME_TO_ID = {name: idx for idx, name in enumerate(POLICY_MODE_NAMES)}
 
 
 def make_simple_general_grid(key, grid_size):
@@ -111,6 +113,16 @@ def opponent_action(opponent_id, key, obs, random_action_fn):
         opponent_id == 0,
         lambda _: random_action_fn(key, obs),
         lambda _: heuristic_action(opponent_id - 1, key, obs),
+        None,
+    )
+
+
+def policy_network_action(network, key, obs, policy_mode):
+    """Dispatch a policy checkpoint action using greedy or sampled execution."""
+    return jax.lax.cond(
+        policy_mode == 0,
+        lambda _: greedy_policy_action(network, obs),
+        lambda _: sampled_policy_action(network, obs, key),
         None,
     )
 

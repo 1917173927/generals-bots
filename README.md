@@ -176,6 +176,30 @@ uv run python examples/_experimental/ppo/train.py 512 \
   --model-path /tmp/generals-ppo-8x8-expander-gpu-v5.eqx
 ```
 
+冻结 checkpoint 自博弈训练：
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+uv run python examples/_experimental/ppo/train.py 512 \
+  --grid-size 8 \
+  --map-generator generated \
+  --mountain-density-min 0.12 \
+  --mountain-density-max 0.22 \
+  --num-cities-min 4 \
+  --num-cities-max 8 \
+  --min-generals-distance 5 \
+  --pool-size 16384 \
+  --num-steps 64 \
+  --num-iterations 300 \
+  --num-epochs 4 \
+  --minibatch-size 4096 \
+  --lr 0.000005 \
+  --init-model-path /tmp/generals-ppo-current.eqx \
+  --opponent-policy-path /tmp/generals-ppo-best-frozen.eqx \
+  --opponent-policy-mode sample \
+  --model-path /tmp/generals-ppo-selfplay-next.eqx
+```
+
 行为克隆 warm start：
 
 ```bash
@@ -204,6 +228,8 @@ uv run python examples/_experimental/ppo/evaluate_policy.py /tmp/generals-ppo-8x
 ```
 
 使用 `--policy-player 1` 可做镜像座位评估，避免只测 player 0 带来的出生点偏差。
+
+评估两个 checkpoint 之间的对局时，给 `evaluate_policy.py` 传入 `--opponent-policy-path` 和 `--opponent-policy-mode`。
 
 ## 验证
 
