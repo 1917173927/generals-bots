@@ -1,211 +1,461 @@
-# 现场答辩准备指南
+# Generals Bots 期末验收汇报稿
 
-本文按评分细则整理项目展示材料，目标是在有限时间内说明：Demo 能跑、模型原理讲得清、技术细节能回答、实验结论有数据支撑、时间控制合理。
+用途：本文件用于 PPTMaster 生成期末验收 PPT。建议按 `---` 分隔为一页幻灯片，每页保留 3-5 个核心要点，演讲时补充“讲述提示”。
 
-## 1. Demo 功能完整运行，无明显 Bug
+汇报主题：基于 JAX 的 Generals.io 双人对战模拟器与强化学习 Bot 实验框架。
 
-建议准备三层 Demo，按现场机器条件逐层展示。
+---
 
-### 必跑基础 Demo
+## 1. 封面
 
-```bash
-uv run python examples/simple_example.py
-```
+### Generals Bots：基于 JAX 的策略博弈 AI 训练与可视化平台
 
-展示点：
+- 项目类型：强化学习环境、规则 Bot、PPO 训练与评估、可视化 Demo
+- 验收目标：展示系统可运行、模型可解释、实验有数据、工程有完整产物
+- 最终成果：完成从环境建模、智能体实现、训练评估到人机对战展示的完整闭环
 
-- `GeneralsEnv` 可以正常 reset/step。
-- 双人对战流程完整：取 observation、agent 出 action、环境推进、终局或截断。
-- 动作格式固定为 `[pass, row, col, direction, split]`，便于后续接规则 bot 和 PPO 策略。
+讲述提示：先强调这不是单纯游戏界面，而是一个可批量并行、可训练、可评估的 AI 实验平台。
 
-### 可视化 Demo
+---
 
-```bash
-uv run python examples/visualization_example.py
-```
+## 2. 现场答辩评分细则对齐
 
-展示点：
+### 评分细则
 
-- pygame 棋盘能展示 generals、cities、mountains、双方领地和军队数量。
-- 可以直观看到 `RandomAgent` 与 `ExpanderAgent` 的差异：随机策略探索无序，扩张策略会优先占领周边可攻占格子。
-- 若现场没有图形界面，可改用仓库内已生成素材：
-  - `generals/assets/gifs/parallel_training_process.gif`
-  - `generals/assets/gifs/parallel_training_square_tiled.gif`
-  - `generals/assets/images/parallel_training_square.png`
+- Demo 功能完整运行，无明显 Bug：25 分
+- 能清晰解释所用模型的原理：20 分
+- 能回答关于技术细节的提问：20 分
+- 实验对比有数据支撑，结论清晰：20 分
+- 展示时间控制合理，表达清晰：15 分
 
-### PPO 人机对战 Demo
+### 本 PPT 对应安排
 
-使用本机已训练好的 `.eqx` checkpoint：
+- Demo：第 14 页展示运行命令与现场流程
+- 模型原理：第 6、8-10 页解释环境、智能体和 PPO 网络
+- 技术细节：第 5-7 页解释架构、状态观测动作、JAX 高性能设计
+- 实验数据：第 11-12 页展示 90%+ 胜率与 benchmark
+- 时间控制：第 20 页给出演示节奏，第 21 页给出现场检查
+
+讲述提示：开场说明汇报会严格围绕评分项展开，让老师知道每个得分点都有对应证据。
+
+---
+
+## 3. 项目背景与目标
+
+### 为什么选择 Generals.io？
+
+- Generals.io 是双人零和、部分可观测、离散动作的策略博弈
+- 游戏包含战争迷雾、资源增长、路径扩张、攻防决策等复杂因素
+- 非常适合验证规则 Bot、强化学习和大规模并行仿真能力
+
+### 项目目标
+
+- 构建可复现的 Generals.io 双人对战环境
+- 支持 JAX `jit`、`vmap`、`lax.scan` 的高吞吐训练流程
+- 实现规则型 Bot 与 PPO 神经网络策略
+- 提供 GUI、人机对战、机器对战、评估脚本和 benchmark
+
+---
+
+## 4. 最终成果总览
+
+### 已完成的核心产物
+
+- `generals/core/`：JAX 游戏规则、地图生成、观测、动作、奖励和环境封装
+- `generals/agents/`：Random、Expander、PPOPolicyAgent 等智能体
+- `examples/_experimental/ppo/`：PPO 训练、行为克隆、策略评估、搜索增强等工具
+- `generals/gui/`：pygame 可视化、人机交互、AI Top-K 动作预览
+- `bench.py`：环境吞吐 benchmark
+- `docs/`：中文手册、训练策略、开发记录和验收材料
+
+### 最终可展示能力
+
+- 一键运行基础环境 Demo
+- 一键启动玩家对战训练好的 PPO 模型
+- 一键观看两个 PPO 模型自动对战
+- 用数据展示模型效果和环境性能
+
+---
+
+## 5. 系统架构
+
+### 四层架构
+
+1. 游戏核心层：`GameState`、规则推进、胜负判断、地图生成
+2. 环境接口层：`GeneralsEnv`，提供 reset/step、reset pool、批量训练接口
+3. 智能体层：规则 Bot、PPO 网络、checkpoint 加载和策略解释
+4. 展示工具层：pygame GUI、PPO 人机对战、机器对战、benchmark 和文档
+
+### 数据流
 
 ```text
-/Users/b./Downloads/generals-ppo-8x8-expander-gpu-v5.eqx
+地图生成 -> GameState -> Observation -> Agent/Policy -> Action -> game.step -> 新状态
 ```
 
-```bash
-uv run python examples/play_against_model.py /Users/b./Downloads/generals-ppo-8x8-expander-gpu-v5.eqx \
-  --grid-size 8 \
-  --map-generator generated \
-  --policy-mode sample \
-  --human-player 0 \
-  --fps 30 \
-  --preview-top-k 3
+讲述提示：这一页重点说明项目结构清晰，不是把所有逻辑写在一个脚本里。
+
+---
+
+## 6. 游戏环境建模
+
+### 状态、观测、动作
+
+- 完整状态 `GameState`：armies、ownership、generals、cities、mountains、time、winner、pool_idx
+- 玩家观测 `Observation`：只能看到战争迷雾下可见区域和统计信息
+- 动作格式：`[pass, row, col, direction, split]`
+- 方向编码：`0=上`，`1=下`，`2=左`，`3=右`
+- `split=1` 表示移动一半军队，`split=0` 表示移动除 1 个驻军外的全部军队
+
+### 规则实现
+
+- 支持城市、山地、将军、军队增长、领地归属和捕获胜利
+- 支持合法动作 mask，避免 agent 主动选择非法移动
+- 支持 generated 地图，可随机生成山地、城市和双方将军位置
+
+---
+
+## 7. 高性能 JAX 环境
+
+### 为什么使用 JAX？
+
+- 训练强化学习需要大量对局采样，普通 Python 循环吞吐有限
+- JAX 可以把规则推进编译为高效数组计算
+- `vmap` 支持大量环境并行
+- `lax.scan` 支持批量 rollout，减少 Python 调度开销
+
+### reset pool 设计
+
+- 地图生成比单步推进更贵
+- 项目预生成 reset pool，终局或截断时从 pool 中快速取新地图
+- 训练时减少随机地图生成开销，提高批量 rollout 稳定性
+
+---
+
+## 8. 智能体设计
+
+### 规则型 Bot
+
+- `RandomAgent`：随机合法动作，作为最低基线
+- `ExpanderAgent`：启发式扩张策略，优先占领可攻占格子和城市
+- 其他 heuristic：用于训练数据、多样化对手和策略评估
+
+### PPO 智能体
+
+- `PPOPolicyAgent`：加载 `.eqx` checkpoint 进行推理
+- 支持 `greedy` 和 `sample` 两种执行方式
+- 支持 Top-K 候选动作解释：来源、目标、方向、概率、value
+
+讲述提示：Random 用来证明流程能跑，Expander 用来作为更有意义的强基线。
+
+---
+
+## 9. PPO 模型原理
+
+### PolicyValueNetwork
+
+- 输入：9 通道棋盘张量
+- 主干：4 层 `3x3` 卷积提取空间特征
+- Policy head：输出 9 个动作平面
+- Value head：估计当前局面的价值
+- 合法动作 mask：非法 logits 加 `-1e9`，采样时几乎不会选到非法动作
+
+### 9 个输入通道
+
+- armies
+- generals
+- cities
+- mountains
+- neutral cells
+- owned cells
+- opponent cells
+- fog cells
+- structures in fog
+
+---
+
+## 10. 训练路线
+
+### 从能玩到会赢
+
+1. 行为克隆 warm start：先模仿 randomized Expander，学习基础扩张行为
+2. PPO-vs-Expander fine-tune：在 generated 地图上继续强化学习
+3. 多 epoch/minibatch 更新：提高样本利用率
+4. 多 seed、双座位评估：减少随机性和出生点偏差
+5. 后续探索：frozen checkpoint self-play、rollout search、conservative distillation
+
+### 为什么不直接从零 PPO？
+
+- 终局奖励稀疏，随机探索很难快速学到有效扩张
+- 行为克隆能提供合理初始策略
+- PPO 在 warm start 基础上继续优化，训练更稳定
+
+---
+
+## 11. 最终模型成果
+
+### 当前展示模型
+
+```text
+generals-ppo-8x8-expander-gpu-v5.eqx
 ```
 
-展示点：
+- 地图：8x8 generated
+- 对手：randomized Expander
+- 执行方式：sample policy
+- 评估方式：独立 seed、player 0 / player 1 双座位测试
+- 结论：sampled PPO 在 8x8 generated 地图上对 Expander 达到 90%+ 总胜率
 
-- 左键选择源格，再点相邻目标格；`S` 切换半兵移动，`P` 跳过。
-- 右侧面板展示 PPO Top-K 候选动作、概率和 value，可作为“模型可解释性”的现场说明。
-- 这个模型是 sampled PPO 在 8x8 generated 地图上对 Expander 达到 90%+ 胜率的版本，现场建议用 `--policy-mode sample` 展示。
+### 评估结果
 
-## 2. 所用模型原理
+```text
+seed 8501, policy_player=0: 1854/150/44, win rate = 90.53%
+seed 8501, policy_player=1: 1846/168/34, win rate = 90.14%
+seed 8503, policy_player=0: 1859/155/34, win rate = 90.77%
+seed 8503, policy_player=1: 1856/160/32, win rate = 90.62%
+```
 
-本项目可以按“环境建模 + 基线策略 + PPO 策略”讲。
+### 对 Random 的 sanity check
 
-### 环境建模
+```text
+seed 8504, policy_player=0: 2039/2/7, win rate = 99.56%
+```
 
-Generals.io 被建模为双人零和、部分可观测、离散动作的序贯决策问题。
+讲述提示：这里要强调“不是只打赢 Random”，而是打赢更强的 Expander 基线。
 
-- 状态 `GameState`：完整隐藏状态，包括 armies、ownership、generals、cities、mountains、time、winner、pool_idx。
-- 观测 `Observation`：每名玩家只能看到战争迷雾下的信息，包括己方领地、可见敌方、山、城、未知区域和双方统计量。
-- 动作：固定 5 维整数 `[pass, row, col, direction, split]`，方向为上下左右，split 表示移动一半军队。
-- 奖励：终局捕获对方 general 是核心目标；训练中额外使用 army ratio、land ratio、city capture 等 shaping 信号缓解稀疏奖励。
+---
 
-### PPO 策略网络
+## 12. Benchmark 性能结果
 
-PPO checkpoint 使用 `PolicyValueNetwork`，是一个卷积 Actor-Critic 网络。
-
-- 输入：9 个空间通道，包括 armies、generals、cities、mountains、neutral、owned、opponent、fog、structures in fog。
-- 主干：4 层 `3x3` 卷积提取棋盘局部空间特征。
-- Policy head：`1x1` 卷积输出 9 个动作平面：4 个全兵方向、4 个半兵方向、1 个 pass。
-- Value head：`1x1` 卷积加全连接层输出当前局面的 value。
-- 合法动作 mask：非法移动 logits 加 `-1e9`，保证采样和 greedy 选择不会主动选非法动作。
-
-### 训练路线
-
-当前较强路线是：
-
-1. 行为克隆 warm start：先模仿 randomized Expander，学会基础扩张。
-2. PPO-vs-Expander fine-tune：用 PPO 在 generated 地图上继续优化。
-3. 多 seed、双座位评估：分别评估 player 0 和 player 1，避免出生点或先后手偏差。
-4. 后续可接 frozen checkpoint self-play：用历史 checkpoint 作冻结对手，避免同步自博弈不稳定。
-
-## 3. 技术细节高频问答
-
-### 为什么用 JAX？
-
-核心游戏逻辑用 JAX array 和不可变 `NamedTuple`，可以 `jit` 编译、`vmap` 并行和 `lax.scan` 扫描多步 rollout。强化学习需要大量模拟对局，JAX 的向量化能显著提升采样吞吐。
-
-### 为什么要 reset pool？
-
-地图生成比单步推进更贵，且在 JIT 内频繁随机生成复杂地图会增加开销。项目用预生成的 `GameState` pool 做 cheap auto-reset：游戏终局或达到 truncation 后，从 pool 中取下一局初始状态。
-
-### 如何处理战争迷雾？
-
-完整状态保存在 `GameState`，但 agent 只能拿到 `get_observation(state, player_idx)` 的结果。可见性来自己方占领格周围 `3x3` 范围；不可见区域用 fog/structures-in-fog 通道表示。
-
-### 如何保证动作合法？
-
-规则型 agent 使用 `compute_valid_move_mask` 找合法 `(row, col, direction)`。PPO 网络在 logits 上叠加 mask，非法动作概率被压到接近 0；pass 动作单独保留。
-
-### 为什么有行为克隆？
-
-直接 PPO 面对稀疏终局奖励时探索成本高。先模仿 Expander 可以让网络学会“扩张、占城、聚兵”这类基础行为，再用 PPO 从这个起点优化，训练更稳定。
-
-### 为什么评估要测两个 player seat？
-
-地图随机生成和行动顺序可能带来座位偏差。`evaluate_policy.py` 支持 `--policy-player 0/1`，同一 checkpoint 两边都测，结论更可信。
-
-## 4. 实验对比与数据支撑
-
-### 性能 benchmark
-
-当前 `bench.py` 已按最新 `GeneralsEnv.reset(key) -> (pool, state)` 和 `env.step(state, actions, pool)` 接口修复，并支持小参数快速验证。
-
-快速验证命令：
+### 快速验证命令
 
 ```bash
 uv run python bench.py --grid-size 8 --pool-size 128 --num-envs 16 --scan-steps 20 --reps 1 --single-steps 20
 ```
 
-本机一次验证结果：
+### 本机验证结果
 
 ```text
-Pool generation: 128 states in 1.97s, 0.1 MB total
+Pool generation: 128 states in 1.97s
 Python loop (obs + agent + step): 606 steps/sec
 Python loop (step only, pass): 26,781 steps/sec
 env.step (pool auto-reset): 1,179,906 steps/sec
 game_step (no reset, ceiling): 1,426,718 steps/sec
 ```
 
-结论：Python 单步循环适合调试；正式训练和评估应使用 `vmap + lax.scan` 批量推进。
+### 结论
 
-### 策略质量数据
+- Python 循环适合调试
+- 批量训练应使用 JAX 编译后的 `vmap + scan`
+- reset pool 和 JAX 化规则显著提升 rollout 吞吐
 
-训练文档记录的当前最佳 sampled PPO checkpoint 是：
+---
 
-```text
-/Users/b./Downloads/generals-ppo-8x8-expander-gpu-v5.eqx
+## 13. 可视化与交互成果
+
+### pygame GUI
+
+- 展示双方领地、军队数量、将军、城市、山地和战争迷雾
+- 支持左键选择源格，再点相邻目标格移动
+- 支持 `S` 半兵移动、`P` 跳过、`R` 重开、`Q` 退出
+- 支持玩家视角和机器对战观察
+
+### AI 可解释性展示
+
+- 右侧面板展示 PPO Top-K 候选动作
+- 每个候选动作包含概率、方向、是否 split 和 value
+- 棋盘上叠加箭头和候选标记，直观看到模型下一步想法
+
+讲述提示：现场可以边操作边解释模型不是黑箱，至少能看到它当前最倾向的动作。
+
+---
+
+## 14. Demo 展示方案
+
+### 推荐展示顺序
+
+1. 基础环境运行：证明环境 reset/step 完整
+2. 可视化对战：证明规则和地图展示清楚
+3. PPO 人机对战：证明训练模型可加载、可交互、可解释
+4. PPO 机器对战：证明两个模型可以自动对局
+
+### 玩家对战 PPO
+
+```bash
+cd /Users/b./Code/generals-bots
+./play-v5.command
 ```
 
-评估设置：
+### PPO 自动对战
 
-- 地图：8x8 generated
-- mountains：0.12-0.22
-- cities：4-8
-- min generals distance：5
-- max steps：500
-- opponent：randomized Expander
-- 每组 2048 局
-- sampled policy，分别测 player 0 和 player 1
-
-最终结果：
-
-```text
-seed 8501, policy_player=0: wins/losses/draws = 1854/150/44, win rate = 90.53%
-seed 8501, policy_player=1: wins/losses/draws = 1846/168/34, win rate = 90.14%
-seed 8503, policy_player=0: wins/losses/draws = 1859/155/34, win rate = 90.77%
-seed 8503, policy_player=1: wins/losses/draws = 1856/160/32, win rate = 90.62%
+```bash
+cd /Users/b./Code/generals-bots
+./watch-v5.command
 ```
 
-对 Random 的 sanity check：
+现场提示：如果 GUI 机器环境不可用，就展示仓库内已有 GIF 或截图素材。
+
+---
+
+## 15. 工程质量与测试
+
+### 工程化特征
+
+- 使用 `uv` 管理依赖和 Python 版本
+- 核心代码按 `core / agents / gui / remote / examples / tests / docs` 分层
+- 训练、评估、可视化和 benchmark 命令可复现
+- `.eqx` checkpoint 与源码分离，避免把大型实验产物提交到 Git
+
+### 测试覆盖
+
+- 游戏规则测试
+- 地图生成测试
+- reward 测试
+- PPO agent 和 checkpoint 加载测试
+- GUI 输入与渲染辅助函数测试
+- benchmark 和训练脚本 smoke test
+
+---
+
+## 16. 项目亮点
+
+### 技术亮点
+
+- 将 Generals.io 抽象为 JAX 可编译强化学习环境
+- 支持战争迷雾下的部分可观测策略学习
+- 使用 reset pool 降低批量训练中的地图生成开销
+- 从规则策略、行为克隆到 PPO fine-tune 形成完整训练路线
+- 提供可解释的 PPO Top-K 动作预览，便于答辩和调试
+
+### 成果亮点
+
+- 有可运行 Demo
+- 有训练好的 PPO checkpoint
+- 有 90%+ vs Expander 的量化结果
+- 有百万级 step/sec 的 JAX benchmark
+- 有完整中文文档和展示材料
+
+---
+
+## 17. 局限与改进方向
+
+### 当前局限
+
+- 当前最佳结论主要限定在 8x8 generated 地图
+- sample policy 对 Expander 达到 90%+，但 greedy 策略仍有提升空间
+- 大地图和更强对手下仍需要更多训练与评估
+- 真正稳定的 checkpoint league 自博弈还可以继续完善
+
+### 后续计划
+
+- 扩展到 16x16 或更接近真实 Generals.io 的地图规模
+- 引入历史 checkpoint league，提升自博弈稳定性
+- 结合 rollout search 或更强 value head 提升决策质量
+- 接入远程 generals.io 客户端，进一步验证真实对战能力
+
+---
+
+## 18. 期末验收总结
+
+### 一句话总结
+
+本项目完成了一个从游戏规则、并行环境、智能体训练、模型评估到可视化展示的 Generals.io 强化学习实验框架。
+
+### 三个核心贡献
+
+1. 工程贡献：实现 JAX 化 Generals.io 环境，支持高吞吐并行 rollout
+2. 算法贡献：实现规则 Bot、行为克隆、PPO 训练和 checkpoint 推理
+3. 展示贡献：实现 pygame 人机对战、AI 候选动作预览和完整验收材料
+
+### 最终验收结论
+
+- 系统能运行
+- 模型能加载
+- 策略有数据支撑
+- Demo 可现场展示
+- 项目文档和代码结构完整
+
+---
+
+## 19. 现场答辩话术
 
 ```text
-seed 8504, policy_player=0: wins/losses/draws = 2039/2/7, win rate = 99.56%
+这个项目的核心不是只做一个游戏，而是把 Generals.io 建成了一个可用于强化学习研究的实验平台。
+我完成了 JAX 化的游戏环境、规则型 Bot、PPO 训练与评估工具，并训练出可以在 8x8 generated 地图上以 sample 策略对 Expander 达到 90%+ 总胜率的模型。
+现场 Demo 可以展示基础环境运行、pygame 可视化、人机对战和 AI Top-K 动作解释，说明项目从工程实现到实验验证形成了完整闭环。
 ```
 
-可讲结论：
+---
 
-- 只打赢 Random 不够，Random 太弱。
-- Expander 是更强基线，因此 90%+ vs Expander 更能说明策略有效。
-- 报告 total win rate，不只报 decisive win rate，因为 draw 也是未赢。
+## 20. 展示时间控制
 
-## 5. 展示时间控制
-
-建议按 8 分钟准备，留 2 分钟回答问题。
+### 8 分钟展示 + 2 分钟问答
 
 ```text
 0:00-0:40  项目目标：JAX Generals.io 环境 + bot 实验框架
-0:40-2:00  Demo：simple/visualization/PPO 人机对战三选一或组合展示
-2:00-3:30  环境建模：GameState、Observation、Action、reward
-3:30-5:00  PPO 模型：9 通道输入、卷积 actor-critic、mask、value
-5:00-6:20  训练流程：BC warm start、PPO fine-tune、reset pool、vmap
-6:20-7:20  实验结果：90%+ vs Expander、多 seed、双座位、benchmark
-7:20-8:00  总结不足和改进：greedy 尚未达 90%、更大地图、自博弈 league
+0:40-2:00  Demo：PPO 人机对战或 PPO 机器对战
+2:00-3:20  系统架构：core / env / agents / gui / docs
+3:20-4:40  模型原理：9 通道输入、卷积 Actor-Critic、动作 mask
+4:40-5:50  训练路线：BC warm start、PPO-vs-Expander、双座位评估
+5:50-7:10  实验结果：90%+ vs Expander、benchmark 吞吐
+7:10-8:00  总结：成果、局限、后续方向
 ```
 
-现场答辩表达模板：
+### 时间控制原则
 
-```text
-这个项目不是只做了一个游戏界面，而是把 Generals.io 抽象成了可批量并行的强化学习环境。
-核心贡献有三点：第一，JAX 化的环境支持 vmap/scan 高吞吐 rollout；第二，提供规则型 agent、PPO 训练、行为克隆和评估工具；第三，用独立 seed 和双座位评估证明 sampled PPO 在 8x8 generated 地图上对 Expander 超过 90% 总胜率。
-```
+- Demo 控制在 80 秒内，避免现场操作占用过多时间
+- 每页只讲一个核心结论，不逐字读 PPT
+- 数据页只强调关键数字：90%+ 胜率、百万级 step/sec
+- 问答时优先回答评分相关问题：模型、技术细节、实验结论
 
-## 6. 现场前检查清单
+---
 
-- `uv sync --extra dev` 已完成。
-- `uv run python -m compileall bench.py generals examples tests` 通过。
-- `uv run python examples/simple_example.py` 能运行。
-- 若需要 GUI，提前确认 pygame 窗口能打开。
-- 若展示 PPO，人机对战 checkpoint 路径存在，且 `--grid-size` 与模型训练尺寸一致。
-- 准备好 benchmark 快速命令，避免现场跑默认 24x24 大配置等待太久。
-- 准备好说明“`.eqx` checkpoint 是实验产物，不提交进 Git，只保存在 `/tmp` 或实验目录”。
+## 21. 现场检查清单
+
+- `uv sync --extra dev` 已完成
+- `generals-ppo-8x8-expander-gpu-v5.eqx` 位于仓库根目录，或已设置 `MODEL_PATH`
+- `./play-v5.command` 能启动人机对战
+- `./watch-v5.command` 能启动 PPO 机器对战
+- pygame 窗口能正常打开
+- benchmark 快速命令已提前跑通过
+- 准备好 GIF / 图片作为 GUI 失败时的备选展示
+
+---
+
+## 22. 评分项覆盖矩阵
+
+### 100 分评分项逐项覆盖
+
+| 评分项 | 分值 | PPT 证据页 | 现场展示证据 |
+| --- | ---: | --- | --- |
+| Demo 功能完整运行，无明显 Bug | 25 | 第 13-15 页 | `./play-v5.command`、`./watch-v5.command`、GUI 人机对战 |
+| 清晰解释模型原理 | 20 | 第 6、8、9、10 页 | GameState、Observation、Action、PPO 卷积 Actor-Critic |
+| 回答技术细节提问 | 20 | 第 5-7、15 页 | JAX、reset pool、合法动作 mask、工程分层、测试覆盖 |
+| 实验对比有数据支撑，结论清晰 | 20 | 第 11-12 页 | 90%+ vs Expander、Random sanity check、benchmark steps/sec |
+| 展示时间控制合理，表达清晰 | 15 | 第 19-21 页 | 8 分钟展示节奏、2 分钟问答、现场检查清单 |
+
+### 答辩策略
+
+- 先跑 Demo，再讲原理，最后用数据收束结论
+- 每个技术点都落到代码模块或命令
+- 每个实验结论都给出评估设置和数字
+- 控制口径：当前成果限定在 8x8 generated 地图，不夸大到所有地图规模
+
+---
+
+## 23. PPTMaster 生成建议
+
+### 页面风格
+
+- 使用深色标题 + 浅色内容背景
+- 架构页使用四层结构图
+- 数据页使用表格或柱状图突出 90%+ 胜率
+- Demo 页放启动命令和界面截图
+- 总结页突出“三个贡献”和“最终验收结论”
+
+### 建议配图
+
+- `generals/assets/images/preview.png`
+- `generals/assets/images/parallel_training_square.png`
+- `generals/assets/gifs/parallel_training_process.gif`
+- 人机对战窗口截图
+- AI Top-K 候选动作预览截图
