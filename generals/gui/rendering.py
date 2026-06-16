@@ -8,10 +8,10 @@ from generals.core.config import Dimension, Path
 from generals.gui.properties import GuiMode, Properties
 
 Color: TypeAlias = tuple[int, int, int]
-FOG_OF_WAR: Color = (70, 73, 76)
-NEUTRAL_CASTLE: Color = (128, 128, 128)
-VISIBLE_PATH: Color = (200, 200, 200)
-VISIBLE_MOUNTAIN: Color = (187, 187, 187)
+FOG_OF_WAR: Color = (62, 67, 72)
+NEUTRAL_CASTLE: Color = (150, 154, 160)
+VISIBLE_PATH: Color = (232, 235, 239)
+VISIBLE_MOUNTAIN: Color = (184, 188, 194)
 BLACK: Color = (0, 0, 0)
 WHITE: Color = (230, 230, 230)
 SELECTED_CELL: Color = (255, 214, 64)
@@ -20,6 +20,15 @@ AI_PREVIEW_PRIMARY: Color = (21, 101, 216)
 AI_PREVIEW_SECONDARY: Color = (90, 150, 255)
 AI_PREVIEW_TEXT: Color = (32, 36, 42)
 AI_PREVIEW_MUTED: Color = (112, 118, 128)
+PANEL_BG: Color = (244, 246, 249)
+PANEL_SURFACE: Color = (255, 255, 255)
+PANEL_BORDER: Color = (204, 211, 220)
+PANEL_TEXT: Color = (31, 35, 40)
+PANEL_MUTED: Color = (99, 108, 118)
+PANEL_HEADER: Color = (235, 239, 244)
+GRID_LINE: Color = (116, 124, 134)
+ARMY_DARK: Color = (28, 32, 36)
+ARMY_LIGHT: Color = (255, 255, 255)
 
 
 def get_policy_candidate_arrow(candidate: Any) -> tuple[tuple[int, int], tuple[int, int]] | None:
@@ -122,8 +131,8 @@ class Renderer:
             self.score_cols[col] = [pygame.Surface(size) for _ in range(3)]
 
         self.info_panel = {
-            "time": pygame.Surface((self.right_panel_width / 2, height)),
-            "speed": pygame.Surface((self.right_panel_width / 2, height)),
+            "time": pygame.Surface((self.right_panel_width // 2, height)),
+            "speed": pygame.Surface((self.right_panel_width // 2, height)),
         }
         self.game_status_panel = pygame.Surface((self.right_panel_width, height))
         # Game area and tiles
@@ -141,6 +150,7 @@ class Renderer:
         self._font = pygame.font.Font(Path.FONT_PATH, self.properties.font_size)
         self._debug_font = pygame.font.Font(Path.FONT_PATH, 10)  # Smaller font for debug
         self._panel_font = self._load_panel_font(14)
+        self._panel_title_font = self._load_panel_font(15)
         self._preview_font = self._load_panel_font(12)
 
     def _load_panel_font(self, size: int) -> pygame.font.Font:
@@ -185,42 +195,10 @@ class Renderer:
         """
         Draw player stats and additional info on the right panel
         """
-        self.right_panel.fill(WHITE)
+        self.right_panel.fill(PANEL_BG)
         names = self.game.agents
         player_stats = self.game.get_infos()
         gui_cell_height = Dimension.GUI_CELL_HEIGHT.value
-        gui_cell_width = Dimension.GUI_CELL_WIDTH.value
-
-        # Write names
-        for i, name in enumerate(["Player"] + names):
-            color = self.agent_data[name]["color"] if name in self.agent_data else WHITE
-            # add opacity to the color, where color is a Color(r,g,b)
-            if name in self.agent_fov and not self.agent_fov[name]:
-                color = tuple([int(0.5 * rgb) for rgb in color])
-            self.render_cell_text(self.score_cols["Player"][i], name, bg_color=color)
-
-        # Write other columns
-        for i, col in enumerate(["Army", "Land"]):
-            self.render_cell_text(self.score_cols[col][0], col)
-            for j, name in enumerate(names):
-                if name in self.agent_fov and not self.agent_fov[name]:
-                    color = (128, 128, 128)
-                self.render_cell_text(
-                    self.score_cols[col][j + 1],
-                    str(player_stats[name][col.lower()]),
-                    bg_color=WHITE,
-                )
-
-        # Blit each right_panel cell to the right_panel surface
-        for i, col in enumerate(["Player", "Army", "Land"]):
-            for j, cell in enumerate(self.score_cols[col]):
-                rect_dim = (0, 0, cell.get_width(), cell.get_height())
-                pygame.draw.rect(cell, BLACK, rect_dim, 1)
-
-                position = ((i + 1) * gui_cell_width, j * gui_cell_height)
-                if col == "Player":
-                    position = (0, j * gui_cell_height)
-                self.right_panel.blit(cell, position)
 
         info_text = {
             "time": f"Time: {str(self.game.time // 2) + ('.' if self.game.time % 2 == 1 else '')}",
@@ -229,25 +207,71 @@ class Renderer:
             else f"Speed: {str(self.properties.game_speed)}x",
         }
 
-        # Write additional info
-        for i, key in enumerate(["time", "speed"]):
-            self.render_cell_text(self.info_panel[key], info_text[key])
+        self._draw_score_header()
+        for index, name in enumerate(names):
+            self._draw_player_stat_row(index, name, player_stats[name])
 
-            rect_dim = (
-                0,
-                0,
-                self.info_panel[key].get_width(),
-                self.info_panel[key].get_height(),
-            )
-            pygame.draw.rect(self.info_panel[key], BLACK, rect_dim, 1)
-
-            self.right_panel.blit(self.info_panel[key], (i * 2 * gui_cell_width, 3 * gui_cell_height))
+        self._draw_info_strip(3 * gui_cell_height, info_text)
 
         if self.mode == GuiMode.GAME:
             self.render_game_status(gui_cell_height)
             self.render_policy_preview_panel(5 * gui_cell_height)
         # Render right_panel on the screen
         self.screen.blit(self.right_panel, (self.display_grid_width, 0))
+
+    def _draw_score_header(self) -> None:
+        rect = pygame.Rect(0, 0, self.right_panel_width, Dimension.GUI_CELL_HEIGHT.value)
+        pygame.draw.rect(self.right_panel, PANEL_HEADER, rect)
+        pygame.draw.line(self.right_panel, PANEL_BORDER, rect.bottomleft, rect.bottomright, 1)
+        self._draw_panel_text("Player", (10, 7), self._preview_font, PANEL_MUTED, max_width=112)
+        self._draw_panel_text("Army", (170, 7), self._preview_font, PANEL_MUTED, max_width=48, align="right")
+        self._draw_panel_text("Land", (230, 7), self._preview_font, PANEL_MUTED, max_width=42, align="right")
+
+    def _draw_player_stat_row(self, index: int, name: str, stats: dict[str, int]) -> None:
+        row_top = (index + 1) * Dimension.GUI_CELL_HEIGHT.value
+        rect = pygame.Rect(0, row_top, self.right_panel_width, Dimension.GUI_CELL_HEIGHT.value)
+        base_color = self.agent_data.get(name, {}).get("color", PANEL_MUTED)
+        active = self.agent_fov.get(name, True)
+        color = base_color if active else self._blend_color(base_color, PANEL_BG, 0.55)
+
+        pygame.draw.rect(self.right_panel, PANEL_SURFACE, rect)
+        pygame.draw.line(self.right_panel, PANEL_BORDER, rect.bottomleft, rect.bottomright, 1)
+        pygame.draw.rect(self.right_panel, color, pygame.Rect(10, row_top + 8, 14, 14), border_radius=3)
+
+        name_color = PANEL_TEXT if active else PANEL_MUTED
+        self._draw_panel_text(name, (32, row_top + 7), self._panel_font, name_color, max_width=116)
+        self._draw_panel_text(
+            str(stats["army"]),
+            (170, row_top + 7),
+            self._panel_font,
+            PANEL_TEXT,
+            max_width=48,
+            align="right",
+        )
+        self._draw_panel_text(
+            str(stats["land"]),
+            (230, row_top + 7),
+            self._panel_font,
+            PANEL_TEXT,
+            max_width=42,
+            align="right",
+        )
+
+    def _draw_info_strip(self, top: int, info_text: dict[str, str]) -> None:
+        rect = pygame.Rect(0, top, self.right_panel_width, Dimension.GUI_CELL_HEIGHT.value)
+        pygame.draw.rect(self.right_panel, PANEL_BG, rect)
+        half_width = self.right_panel_width // 2
+        for index, key in enumerate(["time", "speed"]):
+            item_rect = pygame.Rect(index * half_width + 6, top + 4, half_width - 12, rect.height - 8)
+            pygame.draw.rect(self.right_panel, PANEL_SURFACE, item_rect, border_radius=6)
+            pygame.draw.rect(self.right_panel, PANEL_BORDER, item_rect, 1, border_radius=6)
+            self._draw_panel_text(
+                info_text[key],
+                (item_rect.x + 8, item_rect.y + 4),
+                self._preview_font,
+                PANEL_TEXT,
+                max_width=item_rect.width - 16,
+            )
 
     def render_game_status(self, gui_cell_height: int):
         """Draw compact playable-mode interaction status."""
@@ -256,15 +280,24 @@ class Renderer:
         selected_text = str(selected_cell) if selected_cell is not None else "-"
         text = f"{self.properties.last_game_message} | Sel {selected_text} | Split {split_state}"
 
-        self.game_status_panel.fill(WHITE)
-        text_surface = self._debug_font.render(text, True, BLACK)
-        while text and text_surface.get_width() > self.game_status_panel.get_width() - 8:
-            text = text[:-4] + "..." if len(text) > 4 else text[:-1]
-            text_surface = self._debug_font.render(text, True, BLACK)
-        center = (self.game_status_panel.get_width() // 2, self.game_status_panel.get_height() // 2)
-        self.game_status_panel.blit(text_surface, text_surface.get_rect(center=center))
-        rect_dim = (0, 0, self.game_status_panel.get_width(), self.game_status_panel.get_height())
-        pygame.draw.rect(self.game_status_panel, BLACK, rect_dim, 1)
+        self.game_status_panel.fill(PANEL_SURFACE)
+        pygame.draw.line(
+            self.game_status_panel,
+            PANEL_BORDER,
+            (0, self.game_status_panel.get_height() - 1),
+            (self.game_status_panel.get_width(), self.game_status_panel.get_height() - 1),
+            1,
+        )
+        status_color = SELECTED_CELL if selected_cell is not None else VALID_TARGET
+        pygame.draw.rect(self.game_status_panel, status_color, pygame.Rect(8, 8, 14, 14), border_radius=7)
+        self._draw_surface_text(
+            self.game_status_panel,
+            text,
+            (30, 7),
+            self._preview_font,
+            PANEL_TEXT,
+            max_width=self.game_status_panel.get_width() - 38,
+        )
         self.right_panel.blit(self.game_status_panel, (0, 4 * gui_cell_height))
 
     def render_policy_preview_panel(self, top: int):
@@ -274,24 +307,119 @@ class Renderer:
             return
 
         rect = pygame.Rect(0, top, self.right_panel_width, panel_height)
-        pygame.draw.rect(self.right_panel, WHITE, rect)
-        pygame.draw.rect(self.right_panel, BLACK, rect, 1)
+        pygame.draw.rect(self.right_panel, PANEL_BG, rect)
+        pygame.draw.line(self.right_panel, PANEL_BORDER, rect.topleft, rect.topright, 1)
 
-        lines = format_policy_preview_lines(self.properties.policy_preview, max_candidates=5)
+        preview = self.properties.policy_preview
         padding = 8
         y = rect.top + padding
-        for i, line in enumerate(lines):
-            font = self._panel_font if i == 0 else self._preview_font
-            color = AI_PREVIEW_TEXT if i == 0 else AI_PREVIEW_MUTED
-            if i > 0 and line[:2].strip(".").isdigit():
-                color = AI_PREVIEW_TEXT
+        self._draw_panel_text(
+            "AI Preview",
+            (rect.left + padding, y),
+            self._panel_title_font,
+            PANEL_TEXT,
+            max_width=rect.width - 2 * padding,
+        )
+        y += 23
 
-            text = self._truncate_text(line, font, rect.width - 2 * padding)
-            text_surface = font.render(text, True, color)
-            if y + text_surface.get_height() > rect.bottom - padding:
+        if preview is None:
+            self._draw_panel_text(
+                "No policy preview",
+                (rect.left + padding, y),
+                self._preview_font,
+                PANEL_MUTED,
+                max_width=rect.width - 2 * padding,
+            )
+            return
+
+        candidates = list(getattr(preview, "candidates", ()))[:5]
+        if not candidates:
+            self._draw_panel_text(
+                "No candidates",
+                (rect.left + padding, y),
+                self._preview_font,
+                PANEL_MUTED,
+                max_width=rect.width - 2 * padding,
+            )
+            return
+
+        for rank, candidate in enumerate(candidates, start=1):
+            row_height = 35
+            if y + row_height > rect.bottom - padding - 34:
                 break
-            self.right_panel.blit(text_surface, (rect.left + padding, y))
-            y += text_surface.get_height() + 4
+            row_rect = pygame.Rect(rect.left + padding, y, rect.width - 2 * padding, row_height - 4)
+            pygame.draw.rect(self.right_panel, PANEL_SURFACE, row_rect, border_radius=6)
+            pygame.draw.rect(self.right_panel, PANEL_BORDER, row_rect, 1, border_radius=6)
+            color = AI_PREVIEW_PRIMARY if rank == 1 else AI_PREVIEW_SECONDARY
+            pygame.draw.circle(self.right_panel, color, (row_rect.left + 15, row_rect.centery), 10)
+            rank_surface = self._preview_font.render(str(rank), True, ARMY_LIGHT)
+            self.right_panel.blit(rank_surface, rank_surface.get_rect(center=(row_rect.left + 15, row_rect.centery)))
+
+            text = self._format_policy_candidate_line(rank, candidate)
+            self._draw_panel_text(
+                text,
+                (row_rect.left + 32, row_rect.top + 7),
+                self._preview_font,
+                PANEL_TEXT,
+                max_width=row_rect.width - 40,
+            )
+            y += row_height
+
+        footer_lines: list[str] = []
+        value = getattr(preview, "value", None)
+        if value is not None:
+            footer_lines.append(f"Value {value:+.2f}")
+        if getattr(preview, "policy_mode", "greedy") == "sample":
+            footer_lines.append("Sample mode")
+        if footer_lines:
+            self._draw_panel_text(
+                " | ".join(footer_lines),
+                (rect.left + padding, rect.bottom - 24),
+                self._preview_font,
+                PANEL_MUTED,
+                max_width=rect.width - 2 * padding,
+            )
+
+    def _format_policy_candidate_line(self, rank: int, candidate: Any) -> str:
+        probability = getattr(candidate, "probability", 0.0)
+        if getattr(candidate, "is_pass", False):
+            return f"Pass {probability:.0%}"
+
+        source = getattr(candidate, "source", None)
+        target = getattr(candidate, "target", None)
+        direction = getattr(candidate, "direction_label", "Move")
+        split = " split" if getattr(candidate, "is_split", False) else ""
+        return f"{source}->{target} {direction}{split} {probability:.0%}"
+
+    def _draw_panel_text(
+        self,
+        text: str,
+        pos: tuple[int, int],
+        font: pygame.font.Font,
+        color: Color,
+        max_width: int | None = None,
+        align: str = "left",
+    ) -> pygame.Rect:
+        return self._draw_surface_text(self.right_panel, text, pos, font, color, max_width=max_width, align=align)
+
+    def _draw_surface_text(
+        self,
+        surface: pygame.Surface,
+        text: str,
+        pos: tuple[int, int],
+        font: pygame.font.Font,
+        color: Color,
+        max_width: int | None = None,
+        align: str = "left",
+    ) -> pygame.Rect:
+        if max_width is not None:
+            text = self._truncate_text(text, font, max_width)
+        text_surface = font.render(text, True, color)
+        x, y = pos
+        if align == "right" and max_width is not None:
+            x = x + max_width - text_surface.get_width()
+        surface.blit(text_surface, (x, y))
+        return text_surface.get_rect(topleft=(x, y))
 
     def _truncate_text(self, text: str, font: pygame.font.Font, max_width: int) -> str:
         """Trim text to fit one panel line."""
@@ -365,7 +493,7 @@ class Renderer:
             self.render_cell_text(
                 self.tiles[i][j],
                 str(int(visible_army[i, j])),
-                fg_color=WHITE,
+                fg_color=self._army_text_color(i, j, owned_map),
                 bg_color=None,  # Transparent background
             )
 
@@ -379,6 +507,7 @@ class Renderer:
         square_size = Dimension.SQUARE_SIZE.value
         for i, j in np.ndindex(self.grid_height, self.grid_width):
             self.game_area.blit(self.tiles[i][j], (j * square_size, i * square_size))
+        self.draw_grid_lines()
         self.draw_policy_preview_overlay()
         self.screen.blit(self.game_area, (0, 0))
 
@@ -392,11 +521,8 @@ class Renderer:
         """
         Draw background and borders (left and top) for grid tiles of a given channel
         """
-        square_size = Dimension.SQUARE_SIZE.value
         for i, j in self.channel_to_indices(channel):
             self.tiles[i][j].fill(color)
-            pygame.draw.line(self.tiles[i][j], BLACK, (0, 0), (0, square_size), 1)
-            pygame.draw.line(self.tiles[i][j], BLACK, (0, 0), (square_size, 0), 1)
 
     def draw_images(self, channel: np.ndarray, image: pygame.Surface):
         """
@@ -423,10 +549,12 @@ class Renderer:
         selected_row, selected_col = selected_cell
         if 0 <= selected_row < self.grid_height and 0 <= selected_col < self.grid_width:
             rect = (1, 1, square_size - 2, square_size - 2)
+            self._tint_tile(selected_row, selected_col, (*SELECTED_CELL, 58))
             pygame.draw.rect(self.tiles[selected_row][selected_col], SELECTED_CELL, rect, 4)
 
         for target_row, target_col in get_valid_target_cells(selected_cell, self.game.channels.mountains):
             rect = (3, 3, square_size - 6, square_size - 6)
+            self._tint_tile(target_row, target_col, (*VALID_TARGET, 46))
             pygame.draw.rect(self.tiles[target_row][target_col], VALID_TARGET, rect, 3)
 
     def draw_policy_preview_overlay(self):
@@ -470,6 +598,7 @@ class Renderer:
             pygame.draw.rect(self.game_area, color, source_rect, width)
             pygame.draw.rect(self.game_area, color, target_rect, max(2, width - 1))
             self._draw_arrow(source, target, color, width)
+            self._draw_policy_badge(rank + 1, getattr(candidate, "probability", 0.0), target, color)
 
     def _draw_arrow(self, source: tuple[int, int], target: tuple[int, int], color: Color, width: int) -> None:
         square_size = Dimension.SQUARE_SIZE.value
@@ -491,6 +620,51 @@ class Renderer:
             end[1] - head_length * math.sin(angle + head_angle),
         )
         pygame.draw.polygon(self.game_area, color, [end, left, right])
+
+    def draw_grid_lines(self) -> None:
+        """Draw a consistent grid over the composited board."""
+        square_size = Dimension.SQUARE_SIZE.value
+        for col in range(self.grid_width + 1):
+            x = col * square_size
+            pygame.draw.line(self.game_area, GRID_LINE, (x, 0), (x, self.display_grid_height), 1)
+        for row in range(self.grid_height + 1):
+            y = row * square_size
+            pygame.draw.line(self.game_area, GRID_LINE, (0, y), (self.display_grid_width, y), 1)
+
+    def _tint_tile(self, row: int, col: int, color: tuple[int, int, int, int]) -> None:
+        overlay = pygame.Surface((Dimension.SQUARE_SIZE.value, Dimension.SQUARE_SIZE.value), pygame.SRCALPHA)
+        overlay.fill(color)
+        self.tiles[row][col].blit(overlay, (0, 0))
+
+    def _army_text_color(self, row: int, col: int, owned_map: np.ndarray) -> Color:
+        if bool(owned_map[row, col]):
+            return ARMY_LIGHT
+        return ARMY_DARK
+
+    def _draw_policy_badge(self, rank: int, probability: float, target: tuple[int, int], color: Color) -> None:
+        square_size = Dimension.SQUARE_SIZE.value
+        target_row, target_col = target
+        center = (target_col * square_size + square_size - 12, target_row * square_size + 12)
+        if rank == 1:
+            label = f"{probability:.0%}"
+            text_surface = self._debug_font.render(label, True, ARMY_LIGHT)
+            badge_width = max(34, text_surface.get_width() + 10)
+            badge_rect = pygame.Rect(0, 0, badge_width, 18)
+            badge_rect.center = center
+            badge_rect.x = max(2, min(badge_rect.x, self.display_grid_width - badge_rect.width - 2))
+            badge_rect.y = max(2, min(badge_rect.y, self.display_grid_height - badge_rect.height - 2))
+            pygame.draw.rect(self.game_area, color, badge_rect, border_radius=9)
+            pygame.draw.rect(self.game_area, ARMY_LIGHT, badge_rect, 1, border_radius=9)
+            self.game_area.blit(text_surface, text_surface.get_rect(center=badge_rect.center))
+            return
+
+        pygame.draw.circle(self.game_area, color, center, 11)
+        pygame.draw.circle(self.game_area, ARMY_LIGHT, center, 11, 1)
+        text_surface = self._preview_font.render(str(rank), True, ARMY_LIGHT)
+        self.game_area.blit(text_surface, text_surface.get_rect(center=center))
+
+    def _blend_color(self, first: Color, second: Color, weight: float) -> Color:
+        return tuple(int(first[i] * (1.0 - weight) + second[i] * weight) for i in range(3))
 
     def draw_tile_types(self):
         """
